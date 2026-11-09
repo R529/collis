@@ -1,0 +1,10 @@
+# 用户本地设置，不随插件分发
+data.json
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
+
+# 依赖
+node_modules/
