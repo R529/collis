@@ -8,3 +8,26 @@ Thumbs.db
 
 # 依赖
 node_modules/
+
+# 凭据与密钥（防止误提交到公开仓库）
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*token*
+*credentials*
+
+# 备份与临时文件
+*.bak
+*.bak.*
+*.tmp
+*~
+*.swp
+
+# 本机路径 / 个人数据 / 测试 vault
+.obsidian/
+*.local
+*.db
