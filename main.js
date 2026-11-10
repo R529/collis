@@ -2468,7 +2468,9 @@ class QuickMemoPlugin extends Plugin {
     this.addCommand({
       id: 'quick-capture',
       name: '快速记一条',
-      hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'K' }],
+      // 'Mod' 由 Obsidian 按平台解析：macOS 是 Cmd，Windows/Linux 是 Ctrl。
+      // 写死 'Ctrl' 的话 Mac 用户按 Cmd+Shift+K 无效，物理 Ctrl 键又不在常用位置。
+      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'K' }],
       callback: () => new CaptureModal(this.app, this).open(),
     });
 

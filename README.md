@@ -10,7 +10,7 @@
 
 ## 它是什么
 
-Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也可以按 `Ctrl+Shift+K` 在任何页面唤出悬浮输入框；写完按 `Ctrl+Enter`，内容作为一张带时间的卡片写进当月的 Markdown 文件。
+Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也可以按 `Ctrl/Cmd+Shift+K` 在任何页面唤出悬浮输入框；写完按 `Ctrl+Enter`，内容作为一张带时间的卡片写进当月的 Markdown 文件。
 
 记录一张卡片不需要新建文件、不需要起标题、不需要选文件夹，也不打标签就能先存下来。
 
@@ -20,7 +20,7 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 
 | 特点 | 具体是什么 |
 | --- | --- |
-| **低摩擦记录** | 侧边栏常驻输入框，`Ctrl+Shift+K` 全局唤出，两个键存下一张卡片 |
+| **低摩擦记录** | 侧边栏常驻输入框，`Ctrl/Cmd+Shift+K` 全局唤出，两个键存下一张卡片 |
 | **多行原样保留** | 换行写成缩进续行 + 硬换行，卡片视图与阅读视图都保持原分行 |
 | **本地纯 Markdown** | 按月一个文件，无私有格式、无自带云同步，卸载插件内容不动 |
 | **全库检索** | 跨所有月份，按标签、日期、时间、短语、关键词筛选且可叠加 |
@@ -33,9 +33,9 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 ### 记录
 
 - **侧边栏输入框**：常驻在卡片视图顶部，输入框随内容自动长高（最高 200px 后内部滚动）
-- **悬浮输入框**：`Ctrl+Shift+K` 在任何页面唤出，`Esc` 关闭，不打断当前正在读或写的笔记
+- **悬浮输入框**：`Ctrl/Cmd+Shift+K` 在任何页面唤出，`Esc` 关闭，不打断当前正在读或写的笔记
 - **两个键完成记录**：`Enter` 换行，`Ctrl+Enter` 保存，内容落在当天日期下
-- **快捷键可改**：`Ctrl+Shift+K` 只是默认值，在 设置 → 快捷键 里搜索「快速记一条」即可更换；即使改了，命令面板里也仍能调用
+- **快捷键可改**：`Ctrl/Cmd+Shift+K` 只是默认值（macOS 上是 `Cmd+Shift+K`，由 Obsidian 按系统解析），在 设置 → 快捷键 里搜索「快速记一条」即可更换；即使改了，命令面板里也仍能调用
 - **草稿不丢**：关掉窗口、切走、保存失败，内容保留在插件数据文件里，下次打开自动填回，保留 7 天；开始编辑后提示自动收起
 - **标签联想**：输入 `#` 弹出库内已有标签，按使用频率排序；`Tab` 或 ↑↓ + `Enter` 选中，直接按 `Enter` 仍是换行，不影响正常输入
 - **常用标签快选**：悬浮窗口中可直接点常用标签填入
@@ -139,7 +139,7 @@ MIT License，详见 [LICENSE](./LICENSE)。问题与建议：[GitHub Issues](ht
 
 ### What it is
 
-Collis is a quick-capture card plugin for Obsidian. A permanent input sits in the sidebar; `Ctrl+Shift+K` opens a floating input from any page. `Ctrl+Enter` saves what you typed as a timestamped card in this month's Markdown file. No new file, no title, no folder, and no tag required.
+Collis is a quick-capture card plugin for Obsidian. A permanent input sits in the sidebar; `Ctrl/Cmd+Shift+K` opens a floating input from any page. `Ctrl+Enter` saves what you typed as a timestamped card in this month's Markdown file. No new file, no title, no folder, and no tag required.
 
 Cards are ordinary Markdown list items stored in a folder you choose (default `00-Inbox/速记`), one `YYYY-MM.md` per month. The plugin runs fully offline and writes nothing outside your vault.
 
@@ -147,7 +147,7 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 
 | Highlight | What it is |
 | --- | --- |
-| **Low-friction capture** | Permanent sidebar input, `Ctrl+Shift+K` from anywhere, `Enter` for a new line, `Ctrl+Enter` to save |
+| **Low-friction capture** | Permanent sidebar input, `Ctrl/Cmd+Shift+K` from anywhere, `Enter` for a new line, `Ctrl+Enter` to save |
 | **Multi-line kept intact** | Continuation lines are stored as indented lines with hard breaks, preserved in the card view and the reading view |
 | **Plain Markdown, no lock-in** | One file per month, no private format, no own sync; any editor can open it, removing the plugin leaves your notes untouched |
 | **Search across everything** | Every monthly file, filterable by tag, date, time, phrase or keyword, combinable |
@@ -157,7 +157,7 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 
 ### Capture
 
-Permanent sidebar input that grows with the text (scrolls past 200px). `Ctrl+Shift+K` opens a floating input on any page, `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
+Permanent sidebar input that grows with the text (scrolls past 200px). `Ctrl/Cmd+Shift+K` opens a floating input on any page (`Cmd` replaces `Ctrl` on macOS, resolved by Obsidian itself), `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
 
 Type `#` for autocomplete over tags already in your vault, ordered by how often you use them; `Tab` or ↑↓ + `Enter` selects, a plain `Enter` still makes a new line.
 

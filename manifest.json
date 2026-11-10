@@ -1,9 +1,9 @@
 {
   "id": "collis",
   "name": "Collis",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "minAppVersion": "1.4.0",
-  "description": "随手记录卡片笔记并保留多行排版，按月存入 Markdown 文件，支持标签联想与父子标签聚合.",
+  "description": "Obsidian 速记卡片：Ctrl+Enter 记一张，不建文件、多行排版原样保留，按月存进本地 Markdown。Quick cards for Obsidian: one keystroke to capture, plain Markdown in your own vault.",
   "author": "Lak",
   "isDesktopOnly": false
 }
