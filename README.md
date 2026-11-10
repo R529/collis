@@ -1,5 +1,89 @@
 # Collis
 
+English · [中文文档](#中文文档)
+
+Collis is a lightweight card-note plugin for Obsidian. Jot down a thought without creating a file, naming it, or picking a folder — press `Ctrl+Enter` and it is saved. Need a line break mid-thought? Press `Enter`; the layout is kept exactly as you wrote it.
+
+Everything is stored as plain Markdown inside your own vault. No database, no proprietary format, no account.
+
+## Features
+
+- **Quick capture** — a sidebar input box, or `Ctrl+Shift+K` for a floating capture window. `Enter` for a new line, `Ctrl+Enter` to save.
+- **Multi-line cards** — continuation lines are stored as indented lines with Markdown hard breaks, so both the card view and reading view keep your original line breaks.
+- **Tag autocomplete** — type `#` and pick from tags that already exist in your cards.
+- **Nested tags** — `#parent/child` is supported; the tag bar groups children under their parent, and clicking the parent filters the whole group.
+- **Search across everything** — the search box covers every monthly file, not just the current month. Type `#tag`, `2026-11`, `11-07`, `13:41` or `"a whole phrase"` to filter by that dimension; space-separated words must all match.
+- **Edit, delete, undo** — inline editing with `Ctrl+Enter` to save and `Esc` to cancel; single or batch delete, a 9-second undo notice, and a "recently deleted" list holding the last 50 cards.
+- **Copy card text or block reference** — copy the plain text of a card, or `![[2026-11#^a1b2c3]]` to embed it elsewhere.
+- **Clickable URLs** — bare `https://…` links in card text open in your browser. `[[wikilinks]]` and Markdown syntax stay plain text on purpose.
+- **Draft recovery** — close the window mid-sentence and the text is kept locally, then restored next time you open it (kept for 7 days).
+- **Monthly archive** — one file per month, so a single file never grows without bound.
+
+## Installation
+
+### From the community plugin store
+
+1. Open **Settings → Community plugins → Browse**.
+2. Search for **Collis**.
+3. Click **Install**, then **Enable**.
+
+### Manual installation
+
+1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/R529/collis/releases).
+2. Put them in `<your vault>/.obsidian/plugins/collis/`.
+   The folder name must be `collis`, matching the plugin ID.
+3. Reload Obsidian, then enable **Collis** under **Settings → Community plugins**.
+
+### With BRAT
+
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat).
+2. Run `BRAT: Add a beta plugin for testing`.
+3. Enter `R529/collis` and enable the plugin.
+
+## Usage
+
+- Click the **Collis** ribbon icon to open the card view, or press `Ctrl+Shift+K` for the quick capture window.
+- Type your note. `Enter` inserts a new line, `Ctrl+Enter` saves it under today's date.
+- Add tags inline with `#tag`; start typing `#` and pick from the suggestions.
+- Cards are written to `00-Inbox/速记/` as `YYYY-MM.md` by default. The folder is configurable in settings.
+
+### Data format
+
+```markdown
+## 2026-11-06
+
+- 09:15 Meeting notes: confirm next Wednesday's release plan #work ^a1b2c3
+- 14:30 Buy milk and coffee beans #life ^d4e5f6
+- 16:51 First line  
+  Second line #example ^e7g8h9
+```
+
+- `- HH:mm text` is the first line of a card; continuation lines are indented by two spaces, ending with two spaces for a Markdown hard break.
+- `^a1b2c3` is an Obsidian block ID, kept on the last line of the card so it can be linked and embedded.
+- Cards are ordinary Markdown list items. Uninstall the plugin and your notes are untouched.
+
+### Strict card detection
+
+Since 1.7.0, only entries that carry a block ID are treated as cards. A line you type by hand in the editor — `- 12:30 standup` — stays plain text, so it never shows up in the card list and can never be deleted by mistake. To make such a line a card, append `^` plus a few letters. This rule can be turned off in settings.
+
+## Compatibility
+
+- Obsidian 1.4.0 or newer; works on desktop and mobile.
+- Older single-line card formats are fully compatible — no migration needed.
+- Cards live in standard `YYYY-MM.md` files and can be opened by any editor.
+
+## Privacy
+
+The plugin runs entirely offline. It makes no network requests, collects no data, and needs no account. Unfinished drafts are kept only in the plugin's own data file, never written into your notes.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
+
+---
+
+## 中文文档
+
 Collis 是一个为 Obsidian 打造的轻量卡片笔记插件。随手即记，数据完全存在你自己的 Markdown 文件里。
 
 不需要新建文件、不需要命名、不需要选文件夹——写完按 `Ctrl+Enter`，就存好了。写到一半想换行？直接按 `Enter`，保存后排版原样保留。
