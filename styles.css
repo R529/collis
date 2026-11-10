@@ -246,11 +246,46 @@
 }
 
 .qm-day {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   color: var(--text-faint);
   letter-spacing: 0.4px;
   margin: 10px 0 1px 2px;
   font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+}
+
+.qm-day-arrow {
+  font-size: 9px;
+  color: var(--text-faint);
+  width: 10px;
+  flex: 0 0 auto;
+}
+
+.qm-day-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-faint);
+  opacity: 0.8;
+}
+
+.qm-day:hover .qm-day-text {
+  color: var(--text-muted);
+}
+
+.qm-day.is-locked {
+  cursor: default;
+}
+
+.qm-day.is-locked:hover .qm-day-text {
+  color: var(--text-faint);
+}
+
+.qm-day.is-collapsed {
+  margin-bottom: 2px;
 }
 
 .qm-card {
@@ -524,4 +559,122 @@
 .qm-suggest-item.is-create {
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* ---------- 搜索作用域提示 ---------- */
+
+.qm-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--background-secondary-alt);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.qm-scope.is-hidden {
+  display: none;
+}
+
+.qm-scope-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qm-scope-x {
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--text-faint);
+  line-height: 1;
+  padding: 0 1px;
+}
+
+.qm-scope-x:hover {
+  color: var(--text-normal);
+}
+
+/* ---------- 多选删除 ---------- */
+
+.qm-select-toggle {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.qm-select-toggle:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.qm-select-toggle.is-active {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.qm-selectbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 6px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.qm-selectbar.is-hidden {
+  display: none;
+}
+
+.qm-mini-btn.is-danger {
+  color: var(--text-error);
+  border-color: var(--text-error);
+}
+
+.qm-mini-btn.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.qm-card.is-selectable {
+  position: relative;
+  padding-left: 30px;
+  cursor: pointer;
+}
+
+.qm-card.is-picked {
+  background: var(--background-modifier-hover);
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
+
+.qm-tick {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  width: 14px;
+  height: 14px;
+  line-height: 13px;
+  text-align: center;
+  font-size: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: transparent;
+}
+
+.qm-card.is-picked .qm-tick {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
 }

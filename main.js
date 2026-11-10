@@ -20,6 +20,8 @@ const DEFAULT_SETTINGS = {
   maxCards: 500,
   trash: [],
   autoPruneEmptyDates: true,
+  blockRefEmbed: false,
+  collapsedDates: [],
 };
 
 const MONTH_FILE_RE = /^\d{4}-\d{2}\.md$/;
@@ -397,6 +399,8 @@ function parseCards(content, filePath) {
       date: curDate || '未分组',
       time: padTime(cm[1]),
       body,
+      // 搜索时每次都 toLowerCase() 会产生大量临时字符串，这里预存一份
+      bodyLower: body.toLowerCase(),
       tags,
       lineIndex: i,
       lineEnd: end,
@@ -441,6 +445,89 @@ function qmLocateCard(content, card) {
   if (same[i] && same[i].body === card.body) return same[i];
   const byBody = same.filter((c) => c.body === card.body);
   return byBody.length === 1 ? byBody[0] : null;
+}
+
+/* ---------------- 搜索 ---------------- */
+
+/**
+ * 解析搜索框内容为一组条件，可以混用：
+ *   #标签        → 标签路径匹配（与标签树同语义，父标签含子标签）
+ *   2026-11-07   → 指定日期
+ *   2026-11      → 指定月份
+ *   11-07        → 任意年份的同月日
+ *   13:41        → 指定时间
+ *   "整段话"      → 原文短语
+ *   其它          → 正文子串，忽略大小写
+ * 空格分隔多个条件，需全部满足。
+ */
+function qmParseQuery(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return [];
+
+  const out = [];
+  const re = /"([^"]+)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const phrase = m[1];
+    const tok = phrase !== undefined ? phrase : m[2];
+    if (!tok) continue;
+
+    if (phrase !== undefined) {
+      out.push({ kind: 'text', value: tok.toLowerCase() });
+      continue;
+    }
+    if (tok.charAt(0) === '#' && tok.length > 1) {
+      out.push({ kind: 'tag', value: tok.slice(1) });
+      continue;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(tok)) {
+      out.push({ kind: 'date', value: tok });
+      continue;
+    }
+    if (/^\d{4}-\d{2}$/.test(tok)) {
+      out.push({ kind: 'month', value: tok });
+      continue;
+    }
+    if (/^\d{2}-\d{2}$/.test(tok)) {
+      out.push({ kind: 'md', value: tok });
+      continue;
+    }
+    if (/^\d{1,2}:\d{2}$/.test(tok)) {
+      out.push({ kind: 'time', value: padTime(tok) });
+      continue;
+    }
+    out.push({ kind: 'text', value: tok.toLowerCase() });
+  }
+  return out;
+}
+
+/** 卡片是否满足全部搜索条件（标签、日期、时间、正文） */
+function qmCardMatches(card, conds) {
+  if (!conds || !conds.length) return true;
+
+  const date = String((card && card.date) || '');
+  const time = String((card && card.time) || '');
+  const text =
+    card && typeof card.bodyLower === 'string'
+      ? card.bodyLower
+      : String((card && card.body) || '').toLowerCase();
+
+  for (const c of conds) {
+    if (c.kind === 'tag') {
+      if (!qmCardHasPath(card, c.value)) return false;
+    } else if (c.kind === 'date') {
+      if (date !== c.value) return false;
+    } else if (c.kind === 'month') {
+      if (date.slice(0, 7) !== c.value) return false;
+    } else if (c.kind === 'md') {
+      if (date.slice(5) !== c.value) return false;
+    } else if (c.kind === 'time') {
+      if (time !== c.value) return false;
+    } else if (text.indexOf(c.value) === -1) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function sortCards(cards) {
@@ -747,7 +834,7 @@ class TrashModal extends Modal {
       contentEl.createEl('div', { text: '还没有删除过卡片。', cls: 'qm-hint' });
     } else {
       contentEl.createEl('div', {
-        text: '恢复会按日期和时间插回原文件，只做插入，不会覆盖其它内容。最多保留 20 条。',
+        text: '恢复会按日期和时间插回原文件，只做插入，不会覆盖其它内容。最多保留 50 条（批量删除时一次可能进来多条）。',
         cls: 'qm-hint',
       });
 
@@ -1010,6 +1097,11 @@ class CardsView extends ItemView {
       editingKey: null,
       cards: [],
       tagbarExpanded: false,
+      // 折叠的日期（只影响渲染，不改文件）
+      collapsed: new Set((plugin.settings && plugin.settings.collapsedDates) || []),
+      // 多选删除
+      selectMode: false,
+      selected: new Set(),
     };
   }
 
@@ -1070,16 +1162,40 @@ class CardsView extends ItemView {
 
     this.searchEl = searchRow.createEl('input', { cls: 'qm-search' });
     this.searchEl.setAttr('type', 'text');
-    this.searchEl.setAttr('placeholder', '搜索全部卡片…');
+    this.searchEl.setAttr('placeholder', '搜索全文 · #标签 · 2026-11-07 · 13:41');
     this.searchEl.addEventListener('input', () => {
-      this.state.search = this.searchEl.value.trim();
-      this.renderList();
+      // 每敲一个字都全量重算是主要的卡顿来源，这里合并成一次
+      if (this._searchTimer) clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => {
+        this._searchTimer = null;
+        this.state.search = this.searchEl.value.trim();
+        // 换了搜索条件，旧勾选可能已经不在结果里，清掉更安全
+        if (this.state.selectMode) this.state.selected.clear();
+        this.renderList();
+      }, 120);
     });
+
+    this.selectBtnEl = searchRow.createEl('button', {
+      cls: 'qm-select-toggle',
+      text: '选择',
+    });
+    this.selectBtnEl.onclick = () => this.toggleSelectMode();
+
+    // 搜索与标签筛选同时生效时，把「作用域」写在明面上，避免以为卡片丢了
+    this.scopeEl = filter.createDiv({ cls: 'qm-scope is-hidden' });
 
     this.tagbarEl = filter.createDiv({ cls: 'qm-tagbar' });
 
     /* ---- 列表区 ---- */
     this.listEl = wrap.createDiv({ cls: 'qm-list' });
+
+    /* ---- 多选操作条 ---- */
+    this.selectBarEl = wrap.createDiv({ cls: 'qm-selectbar is-hidden' });
+    this.delSelBtnEl = this.selectBarEl.createEl('button', {
+      cls: 'qm-mini-btn is-danger',
+      text: '删除所选',
+    });
+    this.delSelBtnEl.onclick = () => this.deleteSelected();
 
     /* ---- 底部栏 ---- */
     const footer = wrap.createDiv({ cls: 'qm-footer' });
@@ -1106,6 +1222,10 @@ class CardsView extends ItemView {
   }
 
   async onClose() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
     if (this.tagSuggest) {
       this.tagSuggest.destroy();
       this.tagSuggest = null;
@@ -1141,6 +1261,14 @@ class CardsView extends ItemView {
     this.renderList();
   }
 
+  /** 统一设置标签筛选：换视角时清掉旧的勾选，避免批量删掉看不见的卡片 */
+  setTag(tag) {
+    this.state.activeTag = tag || '';
+    if (this.state.selectMode) this.state.selected.clear();
+    this.renderTagbar();
+    this.renderList();
+  }
+
   renderTagbar() {
     const el = this.tagbarEl;
     if (!el) return;
@@ -1162,9 +1290,7 @@ class CardsView extends ItemView {
       cls: 'qm-tagbar-item' + (act ? '' : ' is-active'),
     });
     all.onclick = () => {
-      this.state.activeTag = '';
-      this.renderTagbar();
-      this.renderList();
+      this.setTag('');
     };
 
     const none = row1.createSpan({
@@ -1172,9 +1298,7 @@ class CardsView extends ItemView {
       cls: 'qm-tagbar-item qm-tagbar-none' + (act === NONE ? ' is-active' : ''),
     });
     none.onclick = () => {
-      this.state.activeTag = act === NONE ? '' : NONE;
-      this.renderTagbar();
-      this.renderList();
+      this.setTag(act === NONE ? '' : NONE);
     };
 
     const LIMIT = 4;
@@ -1203,9 +1327,7 @@ class CardsView extends ItemView {
       });
       chip.onclick = () => {
         // 已在该组：再点一次回到「全部」；在子标签里：回到整组；其它：进入该组
-        this.state.activeTag = isWhole ? '' : g.path;
-        this.renderTagbar();
-        this.renderList();
+        this.setTag(isWhole ? '' : g.path);
       };
     }
 
@@ -1231,9 +1353,7 @@ class CardsView extends ItemView {
           (actLower === activeGroup.key ? ' is-active' : ''),
       });
       whole.onclick = () => {
-        this.state.activeTag = activeGroup.path;
-        this.renderTagbar();
-        this.renderList();
+        this.setTag(activeGroup.path);
       };
 
       for (const ch of activeGroup.children) {
@@ -1244,16 +1364,105 @@ class CardsView extends ItemView {
         });
         chip.onclick = () => {
           // 再点一次已选中的子标签，退回整组
-          this.state.activeTag = actLower === chLower ? activeGroup.path : ch.path;
-          this.renderTagbar();
-          this.renderList();
+          this.setTag(actLower === chLower ? activeGroup.path : ch.path);
         };
       }
     }
   }
 
+  /* ---------------- 搜索作用域 ---------------- */
+
+  renderScope() {
+    const el = this.scopeEl;
+    if (!el) return;
+
+    const tag = this.state.activeTag;
+    // 只有「标签筛选 + 关键词」同时在场时才提示，平时不占地方
+    if (!tag || !String(this.state.search || '').trim()) {
+      el.toggleClass('is-hidden', true);
+      el.empty();
+      return;
+    }
+
+    el.empty();
+    el.toggleClass('is-hidden', false);
+    el.createSpan({
+      cls: 'qm-scope-text',
+      text: '只在 ' + (tag === this.NO_TAG ? '无标签' : '#' + tag) + ' 里搜索',
+    });
+    const x = el.createSpan({ cls: 'qm-scope-x', text: '\u00d7' });
+    x.setAttr('aria-label', '清除标签筛选');
+    x.onclick = () => {
+      this.setTag('');
+    };
+  }
+
+  /* ---------------- 多选删除 ---------------- */
+
+  toggleSelectMode(force) {
+    const next = typeof force === 'boolean' ? force : !this.state.selectMode;
+    if (next && this.state.editingKey) {
+      new Notice('先保存或取消正在编辑的卡片');
+      return;
+    }
+    this.state.selectMode = next;
+    this.state.selected.clear();
+    this.renderList();
+  }
+
+  toggleSelected(card) {
+    const key = this.cardKey(card);
+    if (this.state.selected.has(key)) this.state.selected.delete(key);
+    else this.state.selected.add(key);
+    this.renderList();
+  }
+
+  deleteSelected() {
+    const picked = this.state.cards.filter((c) => this.state.selected.has(this.cardKey(c)));
+    if (!picked.length) {
+      new Notice('还没有选中卡片');
+      return;
+    }
+
+    new ConfirmModal(this.app, '删除选中的 ' + picked.length + ' 条卡片？', async () => {
+      const res = await this.plugin.deleteCards(picked);
+      this.state.selectMode = false;
+      this.state.selected.clear();
+      this.renderList();
+
+      if (res.deleted && res.failed) {
+        new Notice('已删除 ' + res.deleted + ' 条，' + res.failed + ' 条没找到已跳过', 9000);
+      } else if (res.deleted) {
+        new Notice('已删除 ' + res.deleted + ' 条，可在「最近删除」恢复', 9000);
+      } else {
+        new Notice('没有删除：卡片位置已变化，请刷新后重试', 9000);
+      }
+    }).open();
+  }
+
+  /* ---------------- 日期折叠 ---------------- */
+
+  toggleDay(date) {
+    if (String(this.state.search || '').trim()) {
+      new Notice('搜索时日期会自动展开');
+      return;
+    }
+    if (this.state.collapsed.has(date)) this.state.collapsed.delete(date);
+    else this.state.collapsed.add(date);
+    this.saveCollapsed();
+    this.renderList();
+  }
+
+  saveCollapsed() {
+    if (!this.state.collapsed) return;
+    // 只留最近 60 个，避免配置无限增长
+    this.plugin.settings.collapsedDates = Array.from(this.state.collapsed).slice(-60);
+    // 这里不调用 saveSettings：那会触发整个视图重载，折叠一下没必要
+    this.plugin.saveData(this.plugin.settings);
+  }
+
   filtered() {
-    const kw = this.state.search.toLowerCase();
+    const conds = qmParseQuery(this.state.search);
     const tag = this.state.activeTag;
     return this.state.cards.filter((c) => {
       if (tag === this.NO_TAG) {
@@ -1261,8 +1470,7 @@ class CardsView extends ItemView {
       } else if (tag) {
         if (!qmCardHasPath(c, tag)) return false;
       }
-      if (kw && c.body.toLowerCase().indexOf(kw) === -1) return false;
-      return true;
+      return qmCardMatches(c, conds);
     });
   }
 
@@ -1277,11 +1485,15 @@ class CardsView extends ItemView {
     const list = cap > 0 ? matched.slice(0, cap) : matched;
 
     if (this.footerInfoEl) {
-      const total = this.state.cards.length;
-      if (matched.length > 0 && list.length < matched.length) {
-        this.footerInfoEl.setText('命中 ' + matched.length + ' 条 · 显示最近 ' + list.length + ' 条');
+      if (this.state.selectMode) {
+        this.footerInfoEl.setText('已选 ' + this.state.selected.size + ' 条');
       } else {
-        this.footerInfoEl.setText('共 ' + total + ' 条');
+        const total = this.state.cards.length;
+        if (matched.length > 0 && list.length < matched.length) {
+          this.footerInfoEl.setText('命中 ' + matched.length + ' 条 · 显示最近 ' + list.length + ' 条');
+        } else {
+          this.footerInfoEl.setText('共 ' + total + ' 条');
+        }
       }
     }
 
@@ -1290,6 +1502,22 @@ class CardsView extends ItemView {
       this.trashEl.setText(n ? '最近删除 ' + n : '');
       this.trashEl.toggleClass('is-hidden', !n);
     }
+
+    if (this.selectBtnEl) {
+      this.selectBtnEl.setText(this.state.selectMode ? '取消' : '选择');
+      this.selectBtnEl.toggleClass('is-active', this.state.selectMode);
+    }
+
+    if (this.selectBarEl) {
+      this.selectBarEl.toggleClass('is-hidden', !this.state.selectMode);
+      if (this.delSelBtnEl) {
+        const n = this.state.selected.size;
+        this.delSelBtnEl.setText(n ? '删除所选 ' + n : '删除所选');
+        this.delSelBtnEl.toggleClass('is-disabled', !n);
+      }
+    }
+
+    this.renderScope();
 
     if (!list.length) {
       const empty = el.createDiv({ cls: 'qm-empty' });
@@ -1301,13 +1529,35 @@ class CardsView extends ItemView {
       return;
     }
 
-    let lastDate = '';
+    // 按日期分组：组头可折叠，折叠状态记在设置里
+    const searching = !!String(this.state.search || '').trim();
+    const groups = [];
     for (const card of list) {
-      if (card.date !== lastDate) {
-        lastDate = card.date;
-        el.createDiv({ cls: 'qm-day', text: card.date });
-      }
-      this.renderCard(el, card);
+      const last = groups[groups.length - 1];
+      if (last && last.date === card.date) last.cards.push(card);
+      else groups.push({ date: card.date, cards: [card] });
+    }
+
+    for (const g of groups) {
+      const collapsed = !searching && this.state.collapsed.has(g.date);
+      const editingHere = g.cards.some((c) => this.cardKey(c) === this.state.editingKey);
+
+      const day = el.createDiv({
+        cls: 'qm-day' + (collapsed ? ' is-collapsed' : '') + (editingHere ? ' is-locked' : ''),
+      });
+      day.createSpan({ cls: 'qm-day-arrow', text: collapsed ? '\u25b8' : '\u25be' });
+      day.createSpan({ cls: 'qm-day-text', text: g.date });
+      day.createSpan({ cls: 'qm-day-count', text: String(g.cards.length) });
+      day.onclick = () => {
+        if (editingHere) {
+          new Notice('这一天有卡片正在编辑，先保存或取消');
+          return;
+        }
+        this.toggleDay(g.date);
+      };
+
+      if (collapsed) continue;
+      for (const card of g.cards) this.renderCard(el, card);
     }
   }
 
@@ -1329,7 +1579,17 @@ class CardsView extends ItemView {
 
   renderCard(parent, card) {
     const key = this.cardKey(card);
-    const box = parent.createDiv({ cls: 'qm-card' });
+    const picked = this.state.selectMode && this.state.selected.has(key);
+    const box = parent.createDiv({ cls: 'qm-card' + (picked ? ' is-picked' : '') });
+
+    if (this.state.selectMode) {
+      box.addClass('is-selectable');
+      box.createSpan({ cls: 'qm-tick', text: picked ? '\u2713' : '' });
+      box.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleSelected(card);
+      };
+    }
 
     const head = box.createDiv({ cls: 'qm-card-head' });
     head.createSpan({ cls: 'qm-time', text: card.time });
@@ -1387,9 +1647,12 @@ class CardsView extends ItemView {
       const tv = m[1];
       tag.onclick = (e) => {
         e.stopPropagation();
-        this.state.activeTag = tv;
-        this.renderTagbar();
-        this.renderList();
+        // 多选模式下点标签等同于点这张卡片，避免误触发筛选
+        if (this.state.selectMode) {
+          this.toggleSelected(card);
+          return;
+        }
+        this.setTag(tv);
       };
       last = m.index + m[0].length;
     }
@@ -1397,7 +1660,9 @@ class CardsView extends ItemView {
       body.appendChild(document.createTextNode(card.body.slice(last)));
     }
 
-    /* ---- 操作 ---- */
+    /* ---- 操作（多选模式下隐藏，点整块即选中） ---- */
+    if (this.state.selectMode) return;
+
     const acts = box.createDiv({ cls: 'qm-actions' });
 
     // 默认复制正文全文：粘贴即见内容，不依赖块 ID，卡片删掉也不影响
@@ -1408,18 +1673,20 @@ class CardsView extends ItemView {
       new Notice('已复制卡片全文');
     };
 
-    // 需要回链时才用块引用：先确保 ID 落在 Obsidian 认得的块末行
-    const copyRef = acts.createSpan({ cls: 'qm-act', text: '复制块引用' });
+    // 复制链接：默认 [[文件#^id]]（可点跳转），设置里可以改回嵌入形式
+    const copyRef = acts.createSpan({ cls: 'qm-act', text: '复制链接' });
     copyRef.onclick = async (e) => {
       e.stopPropagation();
+      const hadId = !!card.id && card.idOnLastLine;
       const id = await this.plugin.ensureId(card);
       if (!id) {
         new Notice('没找到这张卡片，请改用「复制全文」');
         return;
       }
-      const ref = `![[${card.fileBase}#^${id}]]`;
+      const bang = this.plugin.settings.blockRefEmbed ? '!' : '';
+      const ref = bang + '[[' + this.plugin.linkTarget(card) + '#^' + id + ']]';
       await this.plugin.copy(ref);
-      new Notice('已复制：' + ref);
+      new Notice((hadId ? '已复制：' : '已为这条卡片补上块 ID，已复制：') + ref, 7000);
     };
 
     const edit = acts.createSpan({ cls: 'qm-act', text: '编辑' });
@@ -1526,6 +1793,19 @@ class QuickMemoSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl)
+      .setName('块引用使用嵌入形式')
+      .setDesc(
+        '关闭时「复制链接」给出 [[文件#^id]]，点一下跳到那条卡片；' +
+          '打开后给出 ![[文件#^id]]，粘贴的位置会直接展开卡片内容。'
+      )
+      .addToggle((tg) =>
+        tg.setValue(!!this.plugin.settings.blockRefEmbed).onChange(async (v) => {
+          this.plugin.settings.blockRefEmbed = v;
+          await this.plugin.saveSettings();
+        })
+      );
   }
 }
 
@@ -1587,6 +1867,12 @@ class QuickMemoPlugin extends Plugin {
     }
     if (!Array.isArray(this.settings.trash)) {
       this.settings.trash = [];
+    }
+    if (!Array.isArray(this.settings.collapsedDates)) {
+      this.settings.collapsedDates = [];
+    }
+    if (typeof this.settings.blockRefEmbed !== 'boolean') {
+      this.settings.blockRefEmbed = false;
     }
 
     const folder = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
@@ -1879,6 +2165,23 @@ class QuickMemoPlugin extends Plugin {
 
   /* ---------------- 补块 ID ---------------- */
 
+  /**
+   * 块引用的目标名：默认用文件名（移动文件夹不会断）。
+   * 只有 vault 里存在同名文件时才补全路径，避免链接指到另一个同名文件。
+   */
+  linkTarget(card) {
+    const name = String((card && card.fileBase) || '') + '.md';
+    let files = [];
+    try {
+      files = this.app.vault.getMarkdownFiles ? this.app.vault.getMarkdownFiles() : [];
+    } catch (e) {
+      files = [];
+    }
+    const same = files.filter((f) => f && f.name === name);
+    if (same.length > 1) return String(card.filePath || '').replace(/\.md$/, '');
+    return String((card && card.fileBase) || '');
+  }
+
   async ensureId(card) {
     // 卡片所在文件已经不在了：不要为了复制引用去重建一个空文件
     const file = this.app.vault.getAbstractFileByPath(card.filePath);
@@ -1979,6 +2282,86 @@ class QuickMemoPlugin extends Plugin {
     }
   }
 
+  /**
+   * 批量删除：按文件分组，同一文件里的多条合并成一次读写。
+   * 每条仍然走 qmLocateCard 的正文校验，定位不到的跳过（不写坏文件），
+   * 删下来的原始行进回收站，可以逐条恢复。
+   */
+  async deleteCards(cards) {
+    const list = Array.isArray(cards) ? cards.slice() : [];
+    const saved = [];
+    const failed = [];
+
+    const byFile = new Map();
+    for (const c of list) {
+      const p = String((c && c.filePath) || '');
+      if (!p) {
+        failed.push(c);
+        continue;
+      }
+      if (!byFile.has(p)) byFile.set(p, []);
+      byFile.get(p).push(c);
+    }
+
+    for (const [path, group] of byFile) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      const guard = this.checkManagedFile(file, group[0].date);
+      if (!guard.ok) {
+        failed.push(...group);
+        continue;
+      }
+
+      const removed = [];
+      try {
+        await this.app.vault.process(file, (data) => {
+          const text = String(data || '');
+          const ranges = [];
+          // 两条卡片若指向同一处（比如手工复制出重复块 ID），只删一次
+          const used = new Set();
+          for (const c of group) {
+            const hit = qmLocateCard(text, c);
+            if (!hit || used.has(hit.lineIndex)) {
+              failed.push(c);
+              continue;
+            }
+            used.add(hit.lineIndex);
+            ranges.push(hit);
+          }
+          if (!ranges.length) return data;
+
+          const lines = text.replace(/\r\n?/g, '\n').split('\n');
+          // 从后往前删，前面的行号才不会错位
+          ranges.sort((a, b) => b.lineIndex - a.lineIndex);
+          for (const hit of ranges) {
+            removed.push({
+              date: hit.date,
+              time: hit.time,
+              body: hit.body,
+              lines: lines.slice(hit.lineIndex, hit.lineEnd + 1),
+              filePath: path,
+            });
+            lines.splice(hit.lineIndex, hit.lineEnd - hit.lineIndex + 1);
+          }
+
+          let out = lines.join('\n');
+          for (const d of new Set(removed.map((x) => x.date))) {
+            out = qmPruneEmptyDateSections(out, d);
+          }
+          return out;
+        });
+      } catch (e) {
+        failed.push(...group);
+        continue;
+      }
+
+      saved.push(...removed);
+    }
+
+    if (saved.length) await this.pushTrashMany(saved);
+    this.notifyViews();
+    return { deleted: saved.length, failed: failed.length };
+  }
+
   /* ---------------- 回收站 ---------------- */
 
   async pushTrash(item) {
@@ -1993,9 +2376,30 @@ class QuickMemoPlugin extends Plugin {
       deletedAt: Date.now(),
     };
     this.settings.trash.unshift(entry);
-    if (this.settings.trash.length > 20) this.settings.trash.length = 20;
+    if (this.settings.trash.length > 50) this.settings.trash.length = 50;
     await this.saveSettings();
     return entry;
+  }
+
+  /** 批量入回收站：一次写完，避免 N 次读写配置与刷新视图 */
+  async pushTrashMany(items) {
+    if (!items || !items.length) return;
+    const now = Date.now();
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i] || {};
+      this.settings.trash.unshift({
+        uid: 't' + (now + i).toString(36) + Math.random().toString(36).slice(2, 6),
+        date: String(it.date || ''),
+        time: String(it.time || ''),
+        body: String(it.body || '').slice(0, 4000),
+        lines: Array.isArray(it.lines) ? it.lines.slice() : [],
+        filePath: String(it.filePath || ''),
+        deletedAt: now,
+      });
+    }
+    // 批量删除一次可能超过单条上限，这里放宽到 50 条
+    if (this.settings.trash.length > 50) this.settings.trash.length = 50;
+    await this.saveData(this.settings);
   }
 
   async dropTrash(uid) {
