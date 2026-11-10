@@ -15,6 +15,7 @@ Everything is stored as plain Markdown inside your own vault. No database, no pr
 - **Search across everything** — the search box covers every monthly file, not just the current month. Type `#tag`, `2026-11`, `11-07`, `13:41` or `"a whole phrase"` to filter by that dimension; space-separated words must all match.
 - **Edit, delete, undo** — inline editing with `Ctrl+Enter` to save and `Esc` to cancel; single or batch delete, a 9-second undo notice, and a "recently deleted" list holding the last 50 cards.
 - **Copy card text or block reference** — copy the plain text of a card, or `![[2026-11#^a1b2c3]]` to embed it elsewhere.
+- **Reference count** — each card shows how many notes actually link to it through `[[file#^id]]` or `![[file#^id]]`; several links from the same note count once, and links between cards of the same capture file are ignored. Click the number to filter the referenced cards, or use the "Refs" button to cycle all → referenced → unreferenced. Deleting a card that is referenced elsewhere warns you first.
 - **Clickable URLs** — bare `https://…` links in card text open in your browser. `[[wikilinks]]` and Markdown syntax stay plain text on purpose.
 - **Draft recovery** — close the window mid-sentence and the text is kept locally, then restored next time you open it (kept for 7 days).
 - **Monthly archive** — one file per month, so a single file never grows without bound.
@@ -119,6 +120,7 @@ Obsidian 原生的记录方式是「一条笔记 = 一个文件」。想记一�
 | 撤销与最近删除 | 删除后提示条可点撤销；底部「最近删除」保留最近 50 条，可逐条恢复或清空 |
 | 复制全文 | 一键复制卡片正文全部内容（含换行、标签），粘贴到任何笔记里直接就是文字，不依赖块 ID |
 | 复制块引用 | 一键复制 `![[2026-11#^a1b2c3]]`，块 ID 自动保持在 Obsidian 可识别的位置，方便回链与嵌入 |
+| 被引用次数 | 卡片右上角显示「被 N」——只统计仓库里真实的 `[[文件#^id]]` / `![[文件#^id]]`，同一篇笔记引多次只算一篇，速记内部互引不算；点数字直接筛出已引用的卡片，「引用」按钮在 全部 → 已引用 → 未引用 之间循环；删除被引用的卡片前会提示有多少篇笔记引用了它 |
 | 网址可点 | 正文里的 `https://…` 点了直接开浏览器，长网址在原位折行 |
 | 按月归档 | 每月一个文件，避免单文件无限膨胀 |
 

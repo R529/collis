@@ -259,9 +259,11 @@
 }
 
 .qm-day-arrow {
-  font-size: 9px;
+  font-size: 12px;
+  line-height: 1;
   color: var(--text-faint);
-  width: 10px;
+  width: 14px;
+  text-align: center;
   flex: 0 0 auto;
 }
 
@@ -311,6 +313,25 @@
   font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* 卡片右上角的引用次数：和左侧时间同一行，右对齐；0 次时不显示 */
+.qm-refs {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+}
+
+.qm-refs:hover {
+  color: var(--text-muted);
+  text-decoration: underline;
+}
+
+.qm-refs.is-hidden {
+  display: none;
 }
 
 .qm-tag {
@@ -454,6 +475,15 @@
   color: var(--text-normal);
   margin-bottom: 12px;
   line-height: 1.6;
+}
+
+/* 删除确认里的补充说明：引用情况 */
+.qm-confirm-detail {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-top: -4px;
+  margin-bottom: 12px;
 }
 
 /* ---------- 底部栏 ---------- */
@@ -641,6 +671,14 @@
   color: var(--text-on-accent);
   background: var(--interactive-accent);
   border-color: var(--interactive-accent);
+}
+
+/* 「引用」筛选按钮：比「选择」窄一点，给搜索框多留些宽度；
+   固定最小宽度，切换「引用 / 引用·有 / 引用·无」时搜索框不会跟着抖 */
+.qm-ref-toggle {
+  padding: 0 7px;
+  min-width: 54px;
+  text-align: center;
 }
 
 .qm-selectbar {

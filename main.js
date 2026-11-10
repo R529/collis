@@ -348,6 +348,57 @@ function qmPasteText(body) {
     .join('\n');
 }
 
+/** 取文件名（不含目录和 .md），统一小写便于比对 */
+function qmBaseName(p) {
+  return String(p || '')
+    .split('/')
+    .pop()
+    .replace(/\.md$/i, '')
+    .toLowerCase();
+}
+
+/**
+ * 从一条链接记录里取出「目标文件」和「块 ID」。
+ * 认得 [[2026-11#^abc]]、![[2026-11#^abc]]、[[2026-11#^abc|别名]]、
+ * [[#^abc]]（同文件，target 为空，由调用方忽略）。
+ * 不是块链接就返回 null。
+ */
+function qmParseBlockRef(raw) {
+  const s = String(raw || '');
+  const at = s.indexOf('#^');
+  if (at < 0) return null;
+  let target = s
+    .slice(0, at)
+    .replace(/^!?\[\[/, '')
+    .replace(/\]\]$/, '')
+    .trim();
+  let id = s.slice(at + 2);
+  const cut = id.search(/[|\]\s]/);
+  if (cut >= 0) id = id.slice(0, cut);
+  id = id.trim().toLowerCase();
+  if (!id) return null;
+  return { target, id };
+}
+
+/**
+ * 汇总引用：同一张卡被同一篇笔记引用多次只算「1 篇」，但「处数」照实累加。
+ * items: [{ sourcePath, destPath, id, ambiguous }]
+ * 返回 Map：destPath + '#^' + id -> { notes:Set<来源笔记>, places:number, ambiguous:boolean }
+ */
+function qmAggregateRefs(items) {
+  const out = new Map();
+  for (const it of items || []) {
+    if (!it || !it.destPath || !it.id) continue;
+    const key = it.destPath + '#^' + String(it.id).toLowerCase();
+    let e = out.get(key);
+    if (!e) out.set(key, (e = { notes: new Set(), places: 0, ambiguous: false }));
+    e.places += 1;
+    if (it.sourcePath) e.notes.add(it.sourcePath);
+    if (it.ambiguous) e.ambiguous = true;
+  }
+  return out;
+}
+
 /**
  * 把卡片正文拆成「纯文本 / 标签 / 网址」三类片段，交给渲染层决定怎么画。
  * 只认裸网址（http/https 开头，长什么样就显示什么样）；
@@ -863,16 +914,21 @@ class TagSuggest {
 /* ------------------------------------------------------------------ */
 
 class ConfirmModal extends Modal {
-  constructor(app, text, onConfirm) {
+  constructor(app, text, onConfirm, detail) {
     super(app);
     this.text = text;
     this.onConfirm = onConfirm;
+    // 可选：补充说明（比如「这张卡还被 2 篇笔记引用」）
+    this.detail = detail || '';
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl('div', { text: this.text, cls: 'qm-confirm-text' });
+    if (this.detail) {
+      contentEl.createEl('div', { text: this.detail, cls: 'qm-confirm-detail' });
+    }
 
     const bar = contentEl.createDiv({ cls: 'qm-edit-bar' });
 
@@ -1226,6 +1282,8 @@ class CardsView extends ItemView {
     this.state = {
       search: '',
       activeTag: '',
+      // 引用筛选：'' 全部 / 'has' 只看已引用 / 'none' 只看未引用
+      refFilter: '',
       editingKey: null,
       // 正在编辑但还没保存的文本：列表被重画时用它恢复，避免白打一遍
       editingDraft: null,
@@ -1333,6 +1391,14 @@ class CardsView extends ItemView {
       text: '选择',
     });
     this.selectBtnEl.onclick = () => this.toggleSelectMode();
+
+    // 引用筛选：全部 → 已引用 → 未引用，循环切换
+    this.refBtnEl = searchRow.createEl('button', {
+      cls: 'qm-select-toggle qm-ref-toggle',
+      text: '引用',
+    });
+    this.refBtnEl.setAttr('aria-label', '按引用情况筛选：全部 / 已引用 / 未引用');
+    this.refBtnEl.onclick = () => this.cycleRefFilter();
 
     // 搜索与标签筛选同时生效时，把「作用域」写在明面上，避免以为卡片丢了
     this.scopeEl = filter.createDiv({ cls: 'qm-scope is-hidden' });
@@ -1473,6 +1539,8 @@ class CardsView extends ItemView {
       if (!this.state) return;
       this.state.cards = cards;
       this._loadedOnce = true;
+      // 顺手重算引用（只读内存索引，几毫秒）
+      this.plugin.refreshRefs();
       this.renderTagbar();
       this.renderList();
     } finally {
@@ -1510,7 +1578,7 @@ class CardsView extends ItemView {
     }
 
     this.renderTagbar();
-    this.renderList();
+    this.renderList({ keepScroll: true });
 
     // 读的途中被替换过，可能又落后了，补一次全量收尾
     if (this._refreshing) this._dirty = true;
@@ -1521,6 +1589,40 @@ class CardsView extends ItemView {
     if (!this.state || !this._loadedOnce) return;
     this.renderTagbar();
     this.renderList();
+  }
+
+  /** 引用筛选的实际生效值：索引没建好时一律按「全部」，免得把卡片全判成未引用 */
+  effectiveRefFilter() {
+    const v = this.state.refFilter;
+    if (!v) return '';
+    if (!this.plugin.refsReady()) return '';
+    return v;
+  }
+
+  setRefFilter(v) {
+    this.state.refFilter = v || '';
+    // 换了筛选条件，旧勾选可能已经不在结果里，清掉更安全
+    if (this.state.selectMode) this.state.selected.clear();
+    this.renderRefBtn();
+    this.renderList();
+  }
+
+  cycleRefFilter() {
+    if (!this.plugin.refsReady()) {
+      new Notice('引用统计还在准备，稍等一下再试');
+      return;
+    }
+    const order = ['', 'has', 'none'];
+    const cur = this.state.refFilter || '';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    this.setRefFilter(next);
+  }
+
+  renderRefBtn() {
+    if (!this.refBtnEl) return;
+    const v = this.state.refFilter || '';
+    this.refBtnEl.setText(v === 'has' ? '引用·有' : v === 'none' ? '引用·无' : '引用');
+    this.refBtnEl.toggleClass('is-active', !!v);
   }
 
   /** 统一设置标签筛选：换视角时清掉旧的勾选，避免批量删掉看不见的卡片 */
@@ -1639,8 +1741,18 @@ class CardsView extends ItemView {
     if (!el) return;
 
     const tag = this.state.activeTag;
-    // 只有「标签筛选 + 关键词」同时在场时才提示，平时不占地方
-    if (!tag || !String(this.state.search || '').trim()) {
+    const hasSearch = !!String(this.state.search || '').trim();
+    const rf = this.effectiveRefFilter();
+
+    const parts = [];
+    if (rf === 'has') parts.push('只看已引用');
+    if (rf === 'none') parts.push('只看未引用');
+    // 标签筛选只在「同时有关键词」时提示，平时不占地方
+    if (tag && hasSearch) {
+      parts.push('只在 ' + (tag === this.NO_TAG ? '无标签' : '#' + tag) + ' 里搜索');
+    }
+    // 有筛选时永远说清楚，避免「卡片怎么少了」的错觉
+    if (!parts.length) {
       el.toggleClass('is-hidden', true);
       el.empty();
       return;
@@ -1648,13 +1760,12 @@ class CardsView extends ItemView {
 
     el.empty();
     el.toggleClass('is-hidden', false);
-    el.createSpan({
-      cls: 'qm-scope-text',
-      text: '只在 ' + (tag === this.NO_TAG ? '无标签' : '#' + tag) + ' 里搜索',
-    });
+    el.createSpan({ cls: 'qm-scope-text', text: parts.join(' · ') });
     const x = el.createSpan({ cls: 'qm-scope-x', text: '\u00d7' });
-    x.setAttr('aria-label', '清除标签筛选');
+    x.setAttr('aria-label', '清除筛选');
     x.onclick = () => {
+      this.state.refFilter = '';
+      this.renderRefBtn();
       this.setTag('');
     };
   }
@@ -1686,6 +1797,7 @@ class CardsView extends ItemView {
       return;
     }
 
+    const detail = this.refDeleteDetail(picked);
     new ConfirmModal(this.app, '删除选中的 ' + picked.length + ' 条卡片？', async () => {
       const res = await this.plugin.deleteCards(picked);
       this.state.selectMode = false;
@@ -1699,7 +1811,7 @@ class CardsView extends ItemView {
       } else {
         new Notice('没有删除：卡片位置已变化，请刷新后重试', 9000);
       }
-    }).open();
+    }, detail).open();
   }
 
   /* ---------------- 日期折叠 ---------------- */
@@ -1726,20 +1838,27 @@ class CardsView extends ItemView {
   filtered() {
     const conds = qmParseQuery(this.state.search);
     const tag = this.state.activeTag;
+    const rf = this.effectiveRefFilter();
     return this.state.cards.filter((c) => {
       if (tag === this.NO_TAG) {
         if (!qmCardIsUntagged(c)) return false;
       } else if (tag) {
         if (!qmCardHasPath(c, tag)) return false;
       }
+      if (rf === 'has' && this.plugin.refCount(c) === 0) return false;
+      if (rf === 'none' && this.plugin.refCount(c) > 0) return false;
       return qmCardMatches(c, conds);
     });
   }
 
-  renderList() {
+  renderList(opts) {
     const el = this.listEl;
     if (!el) return;
+    // 外部改动（同步、别处保存）引起的重画不该把滚动位置弹回顶部
+    const keepScroll = opts && opts.keepScroll ? el.scrollTop || 0 : 0;
     el.empty();
+    // 每次重画重新登记数字元素，updateRefs 只改文字、不重画整列
+    this._refBadges = new Map();
 
     // 命中范围始终是全量卡片，仅限制渲染条数以保证流畅
     const matched = this.filtered();
@@ -1770,6 +1889,8 @@ class CardsView extends ItemView {
       this.selectBtnEl.toggleClass('is-active', this.state.selectMode);
     }
 
+    this.renderRefBtn();
+
     if (this.selectBarEl) {
       this.selectBarEl.toggleClass('is-hidden', !this.state.selectMode);
       if (this.delSelBtnEl) {
@@ -1788,6 +1909,7 @@ class CardsView extends ItemView {
       } else {
         empty.setText('没有匹配的卡片。');
       }
+      el.scrollTop = keepScroll;
       return;
     }
 
@@ -1821,6 +1943,60 @@ class CardsView extends ItemView {
       if (collapsed) continue;
       for (const card of g.cards) this.renderCard(el, card);
     }
+
+    el.scrollTop = keepScroll;
+  }
+
+  /** 卡片右上角的引用数字。0 次时元素存在但不显示，方便之后就地更新 */
+  mountRefBadge(parent, card, key) {
+    const el = parent.createSpan({ cls: 'qm-refs' });
+    if (this._refBadges) this._refBadges.set(key, { el, card });
+    this.paintRefBadge(el, card);
+    el.onclick = (e) => {
+      e.stopPropagation();
+      if (this.state.selectMode) {
+        this.toggleSelected(card);
+        return;
+      }
+      if (!this.plugin.refCount(card)) return;
+      this.setRefFilter(this.state.refFilter === 'has' ? '' : 'has');
+    };
+    return el;
+  }
+
+  paintRefBadge(el, card) {
+    if (!el) return;
+    const info = this.plugin.refSummary(card);
+    const n = info ? info.notes : 0;
+    if (!n) {
+      el.setText('');
+      el.addClass('is-hidden');
+      el.setAttr('title', '');
+      return;
+    }
+    el.removeClass('is-hidden');
+    el.setText('被引 ' + n);
+    const more = info.places > n ? '，共 ' + info.places + ' 处' : '';
+    const names = info.names.slice(0, 3).join('、') + (info.names.length > 3 ? ' 等' : '');
+    el.setAttr(
+      'title',
+      '被 ' + n + ' 篇笔记引用' + more + ' · ' + names +
+        (info.ambiguous ? '（有同名文件，链接可能指错，注意）' : '')
+    );
+  }
+
+  /**
+   * 引用数字变了。默认只改文字，不重画整列（否则你正在写文章时侧栏会一直跳）。
+   * 只有「只看已引用 / 只看未引用」开着时结果集会变，才重画一次并保留滚动位置。
+   */
+  updateRefs() {
+    if (!this.state) return;
+    if (this.effectiveRefFilter()) {
+      this.renderList({ keepScroll: true });
+      return;
+    }
+    if (!this._refBadges || !this._refBadges.size) return;
+    for (const { el, card } of this._refBadges.values()) this.paintRefBadge(el, card);
   }
 
   cardKey(card) {
@@ -1839,6 +2015,28 @@ class CardsView extends ItemView {
     );
   }
 
+  /** 删除前的提醒：这些卡片还被哪些笔记引用着（没被引用就返回空串） */
+  refDeleteDetail(cards) {
+    const list = Array.isArray(cards) ? cards : [cards];
+    const hits = list.filter((c) => this.plugin.refCount(c) > 0);
+    if (!hits.length) return '';
+    const names = [];
+    for (const c of hits) {
+      const info = this.plugin.refSummary(c);
+      if (!info) continue;
+      for (const n of info.names) {
+        if (names.indexOf(n) === -1) names.push(n);
+      }
+    }
+    if (!names.length) return '';
+    const shown = names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '');
+    const head =
+      list.length === 1
+        ? '这张卡片被 ' + this.plugin.refCount(hits[0]) + ' 篇笔记引用着'
+        : '其中 ' + hits.length + ' 条被笔记引用，涉及 ' + names.length + ' 篇笔记';
+    return head + '：' + shown + '。删除后这些地方的链接会失效（显示为「找不到该块」）。';
+  }
+
   renderCard(parent, card) {
     const key = this.cardKey(card);
     const picked = this.state.selectMode && this.state.selected.has(key);
@@ -1855,6 +2053,7 @@ class CardsView extends ItemView {
 
     const head = box.createDiv({ cls: 'qm-card-head' });
     head.createSpan({ cls: 'qm-time', text: card.time });
+    this.mountRefBadge(head, card, key);
 
     /* ---- 编辑态 ---- */
     if (this.state.editingKey === key) {
@@ -1981,9 +2180,14 @@ class CardsView extends ItemView {
 
     const del = acts.createSpan({ cls: 'qm-act is-danger', text: '删除' });
     del.onclick = () => {
-      new ConfirmModal(this.app, '删除这条卡片？', async () => {
-        await this.plugin.deleteCard(card);
-      }).open();
+      new ConfirmModal(
+        this.app,
+        '删除这条卡片？',
+        async () => {
+          await this.plugin.deleteCard(card);
+        },
+        this.refDeleteDetail(card)
+      ).open();
     };
   }
 }
@@ -2114,6 +2318,127 @@ class QuickMemoSettingTab extends PluginSettingTab {
 /* ------------------------------------------------------------------ */
 
 class QuickMemoPlugin extends Plugin {
+  /* ---------------- 引用统计（只读 Obsidian 内存索引，不写任何文件） ---------------- */
+
+  refsReady() {
+    return !!this._refReady;
+  }
+
+  /**
+   * 重建「哪张卡被哪些笔记引用」的索引。
+   * 数据全部来自 Obsidian 自己的链接索引（metadataCache），不打开文件、不写入。
+   * 口径：按「篇」统计（同一篇笔记引多次只算 1 篇），同时记下总处数。
+   */
+  buildRefIndex() {
+    const items = [];
+    if (!this.app || !this.app.metadataCache) return new Map();
+
+    let files = [];
+    try {
+      files = this.app.vault.getMarkdownFiles() || [];
+    } catch (e) {
+      return new Map();
+    }
+
+    // 同名文件会让 [[2026-11#^id]] 指错地方，先数一下重名
+    const nameCount = new Map();
+    for (const f of files) {
+      const b = qmBaseName(f.path);
+      nameCount.set(b, (nameCount.get(b) || 0) + 1);
+    }
+
+    for (const f of files) {
+      // 速记文件夹内部互相引用不算：那不代表「用进了长文」
+      if (this.isCardFilePath(f.path)) continue;
+      let cache = null;
+      try {
+        cache = this.app.metadataCache.getFileCache(f);
+      } catch (e) {
+        cache = null;
+      }
+      if (!cache) continue;
+
+      const lists = [cache.links, cache.embeds, cache.frontmatterLinks];
+      for (const arr of lists) {
+        if (!arr || !arr.length) continue;
+        for (const l of arr) {
+          const ref = qmParseBlockRef((l && (l.link || l.original)) || '');
+          if (!ref || !ref.target) continue;
+
+          let dest = null;
+          try {
+            dest = this.app.metadataCache.getFirstLinkpathDest(ref.target, f.path);
+          } catch (e) {
+            dest = null;
+          }
+          if (!dest || !dest.path) continue;
+          if (!this.isCardFilePath(dest.path)) continue;
+
+          const base = qmBaseName(dest.path);
+          items.push({
+            sourcePath: f.path,
+            destPath: dest.path,
+            id: ref.id,
+            ambiguous: (nameCount.get(base) || 0) > 1,
+          });
+        }
+      }
+    }
+
+    return qmAggregateRefs(items);
+  }
+
+  /** 立刻重算（同步、只读内存，几毫秒） */
+  refreshRefs() {
+    let idx;
+    try {
+      idx = this.buildRefIndex();
+    } catch (e) {
+      idx = this._refIndex || new Map();
+    }
+    this._refIndex = idx;
+    this._refReady = true;
+    return idx;
+  }
+
+  /** 别处改了文件后合并重算，避免连续敲字触发多次 */
+  queueRefs(delay) {
+    if (this._refTimer) clearTimeout(this._refTimer);
+    this._refTimer = setTimeout(() => {
+      this._refTimer = null;
+      this.refreshRefs();
+      this.notifyRefs();
+    }, typeof delay === 'number' ? delay : 800);
+  }
+
+  refEntry(card) {
+    if (!card || !card.id) return null;
+    if (!this._refIndex) return null;
+    return this._refIndex.get(card.filePath + '#^' + String(card.id).toLowerCase()) || null;
+  }
+
+  /** 被几篇笔记引用 */
+  refCount(card) {
+    const e = this.refEntry(card);
+    return e ? e.notes.size : 0;
+  }
+
+  /** 被引用的总数 / 来源笔记名，供提示文字用 */
+  refSummary(card) {
+    const e = this.refEntry(card);
+    if (!e) return null;
+    const names = Array.from(e.notes).map((p) => String(p).split('/').pop().replace(/\.md$/i, ''));
+    return { notes: e.notes.size, places: e.places, names, ambiguous: e.ambiguous };
+  }
+
+  /** 通知已打开的面板：只刷新引用数字，不重读文件 */
+  notifyRefs() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_QM)) {
+      const v = leaf.view;
+      if (v && typeof v.updateRefs === 'function') v.updateRefs();
+    }
+  }
+
   async onload() {
     await this.loadSettings();
 
@@ -2153,6 +2478,18 @@ class QuickMemoPlugin extends Plugin {
     // 还是你在 Obsidian 编辑器里手动删掉的卡片
     this.registerEvent(this.app.vault.on('modify', (f) => this.pruneSoon(f)));
 
+    // 引用统计：别的笔记里增删块链接后跟着更新。只读索引，不写任何文件。
+    // 「resolved」是 Obsidian 建完索引的那一下，用来纠正启动初期的空数字
+    if (this.app.metadataCache) {
+      this.registerEvent(
+        this.app.metadataCache.on('resolved', () => {
+          this.refreshRefs();
+          this.notifyRefs();
+        })
+      );
+      this.registerEvent(this.app.metadataCache.on('changed', () => this.queueRefs()));
+    }
+
     // 工作区就绪后体检一次：有没有「没有块 ID」的时间条目（严格模式下它们不显示）
     const check = () => this.checkUnmanagedEntries();
     if (this.app.workspace.onLayoutReady) this.app.workspace.onLayoutReady(check);
@@ -2163,6 +2500,10 @@ class QuickMemoPlugin extends Plugin {
     if (this._pruneTimers) {
       for (const t of this._pruneTimers.values()) clearTimeout(t);
       this._pruneTimers.clear();
+    }
+    if (this._refTimer) {
+      clearTimeout(this._refTimer);
+      this._refTimer = null;
     }
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_QM);
   }
