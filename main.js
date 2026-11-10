@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   quickTags: [],
   maxCards: 500,
   trash: [],
+  autoPruneEmptyDates: true,
 };
 
 const MONTH_FILE_RE = /^\d{4}-\d{2}\.md$/;
@@ -215,6 +216,53 @@ function qmPruneEmptyDateSections(content, onlyDate) {
 
   while (out.length && !out[out.length - 1].trim()) out.pop();
   return out.length ? out.join('\n') + '\n' : '';
+}
+
+/**
+ * 清理文件里所有「只剩空行」的日期段，返回清理结果与被移除的日期。
+ * skipDates 里的日期整段跳过：用于保护光标正停着的那一段，
+ * 免得刚敲完 `## 2026-11-11` 还没写字就被收走。
+ * 段内只要有一行非空内容（备注、待办、任何手写行）就原样保留。
+ */
+function qmStripEmptyDateSections(content, skipDates) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+  const headerRe = /^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/;
+  const skip = skipDates instanceof Set ? skipDates : new Set(skipDates || []);
+  const out = [];
+  const removed = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const hm = lines[i].match(headerRe);
+    if (!hm || skip.has(hm[1])) {
+      out.push(lines[i]);
+      continue;
+    }
+
+    let j = i + 1;
+    let hasContent = false;
+    while (j < lines.length) {
+      if (headerRe.test(lines[j])) break;
+      if (lines[j].trim()) {
+        hasContent = true;
+        break;
+      }
+      j++;
+    }
+
+    if (hasContent) {
+      out.push(lines[i]);
+      continue;
+    }
+
+    // 整段只剩空行：标题与这些空行一起收走，顺带压掉多出来的空白
+    removed.push(hm[1]);
+    i = j - 1;
+    while (out.length && !out[out.length - 1].trim()) out.pop();
+    if (out.length) out.push('');
+  }
+
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return { text: out.length ? out.join('\n') + '\n' : '', removed };
 }
 
 /**
@@ -1465,6 +1513,19 @@ class QuickMemoSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl)
+      .setName('自动清理空日期标题')
+      .setDesc(
+        '某一天的卡片全部删掉后，把这个只剩空白的 ## 日期 标题也一并去掉。' +
+          '在编辑器里手动删卡片同样会清理；光标停在哪个日期段里，哪一段就暂时不动。'
+      )
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.autoPruneEmptyDates !== false).onChange(async (v) => {
+          this.plugin.settings.autoPruneEmptyDates = v;
+          await this.plugin.saveSettings();
+        })
+      );
   }
 }
 
@@ -1496,9 +1557,17 @@ class QuickMemoPlugin extends Plugin {
     });
 
     this.addSettingTab(new QuickMemoSettingTab(this.app, this));
+
+    // 文件被改动后顺手收走空的日期标题：不论是插件删的，
+    // 还是你在 Obsidian 编辑器里手动删掉的卡片
+    this.registerEvent(this.app.vault.on('modify', (f) => this.pruneSoon(f)));
   }
 
   onunload() {
+    if (this._pruneTimers) {
+      for (const t of this._pruneTimers.values()) clearTimeout(t);
+      this._pruneTimers.clear();
+    }
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_QM);
   }
 
@@ -1701,6 +1770,88 @@ class QuickMemoPlugin extends Plugin {
       const v = leaf.view;
       if (v && v.refresh) v.refresh();
     }
+  }
+
+  /* ---------------- 空日期标题自动清理 ---------------- */
+
+  /** 光标正停在哪个日期段里：这一段本轮不清理，避免打断正在写的内容 */
+  cursorDatesIn(file) {
+    const dates = new Set();
+    const leaves = this.app.workspace.getLeavesOfType('markdown');
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      if (!view || !view.file || view.file.path !== file.path) continue;
+      const editor = view.editor;
+      if (!editor) continue;
+      let lines = [];
+      let line = 0;
+      try {
+        lines = String(editor.getValue() || '').split('\n');
+        line = editor.getCursor('head').line;
+      } catch (e) {
+        continue;
+      }
+      for (let i = Math.min(line, lines.length - 1); i >= 0; i--) {
+        const m = lines[i].match(/^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/);
+        if (m) {
+          dates.add(m[1]);
+          break;
+        }
+      }
+    }
+    return dates;
+  }
+
+  /**
+   * 文件被改动后安排一次清理。不管是插件删的、还是你在编辑器里手动删的，
+   * 只要某一天的卡片全没了，这个日期标题就会被收走。
+   */
+  pruneSoon(file) {
+    if (!this.settings.autoPruneEmptyDates) return;
+    if (!(file instanceof TFile)) return;
+    if (!this.checkManagedFile(file).ok) return;
+
+    if (!this._pruneTimers) this._pruneTimers = new Map();
+    const old = this._pruneTimers.get(file.path);
+    if (old) clearTimeout(old);
+
+    const timer = setTimeout(() => {
+      this._pruneTimers.delete(file.path);
+      this.pruneEmptyDates(file);
+    }, 1000);
+    this._pruneTimers.set(file.path, timer);
+  }
+
+  async pruneEmptyDates(file) {
+    if (!this.settings.autoPruneEmptyDates) return;
+
+    const target = this.app.vault.getAbstractFileByPath(file.path);
+    if (!(target instanceof TFile)) return;
+    if (!this.checkManagedFile(target).ok) return;
+
+    let content = '';
+    try {
+      content = await this.app.vault.read(target);
+    } catch (e) {
+      return;
+    }
+    if (!content || content.indexOf('##') === -1) return;
+
+    const skip = this.cursorDatesIn(target);
+    if (!qmStripEmptyDateSections(content, skip).removed.length) return;
+
+    let changed = false;
+    try {
+      await this.app.vault.process(target, (data) => {
+        const res = qmStripEmptyDateSections(String(data || ''), skip);
+        if (!res.removed.length) return data;
+        changed = true;
+        return res.text;
+      });
+    } catch (e) {
+      return;
+    }
+    if (changed) this.notifyViews();
   }
 
   /* ---------------- 增 ---------------- */
