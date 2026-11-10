@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   folderPath: '00-Inbox/速记',
   quickTags: [],
   maxCards: 500,
+  trash: [],
 };
 
 const MONTH_FILE_RE = /^\d{4}-\d{2}\.md$/;
@@ -80,15 +81,58 @@ function qmFormatEntry(time, bodyLines, id) {
   return out;
 }
 
-/** 卡片占用的行范围：返回最后一行下标（续行以空白缩进开头） */
+/**
+ * 卡片占用的行范围：返回最后一行下标（续行以空白缩进开头）。
+ *
+ * 缩进续行本身是贪婪的，光看缩进无法区分「插件写的续行」和「用户手写的
+ * 嵌套清单 / 缩进代码 / 缩进备注」。插件写入的卡片一律以 ` ^id` 收尾，
+ * 所以这里以「范围内最后一条 ^id 结尾的行」为界，其后的缩进行不再算进来。
+ * 没有块 ID 的旧卡片保持原行为，既有文件的解析结果不会变。
+ */
 function qmCardBlockEnd(lines, start) {
   let end = start;
   for (let i = start + 1; i < lines.length; i++) {
     if (!/^[ \t]/.test(lines[i])) break;
     end = i;
   }
+  if (end > start) {
+    for (let i = end; i >= start; i--) {
+      if (/[ \t]\^[A-Za-z0-9-]{4,}[ \t]*$/.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+  }
   while (end > start && lines[end].trim() === '') end--;
   return end;
+}
+
+/** 文件里出现过的块 ID 集合（用于避免重复 ID） */
+function qmCollectIds(content) {
+  const ids = new Set();
+  const re = /[ \t]\^([A-Za-z0-9-]+)[ \t]*$/gm;
+  let m;
+  while ((m = re.exec(String(content || ''))) !== null) ids.add(m[1]);
+  return ids;
+}
+
+/**
+ * 判断一个文件是否「长得像」卡片文件：只允许日期标题、卡片行、缩进续行。
+ * 用于切换文件夹时体检，避免把日记、剪藏之类按年月命名的笔记当卡片接管。
+ */
+function qmLooksLikeCardFile(content) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+  let inDate = false;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (/^##[ \t]+\d{4}-\d{2}-\d{2}[ \t]*$/.test(line)) { inDate = true; continue; }
+    if (!inDate) return false;                 // 日期段之外的正文
+    if (/^##?[ \t]/.test(line)) return false;  // 别的标题
+    if (QM_CARD_RE.test(line)) continue;
+    if (/^[ \t]/.test(line)) continue;         // 缩进续行
+    return false;
+  }
+  return true;
 }
 
 /** 把新卡片的若干行插到指定日期段末尾（纯函数，便于验证） */
@@ -108,18 +152,16 @@ function qmInsertCardLines(content, date, entryLines) {
     return body + '## ' + date + '\n\n' + entryLines.join('\n') + '\n';
   }
 
-  // 找该日期段最后一张卡片的「块尾」，而不是首行，避免插进别人的续行里
-  let lastCard = -1;
+  // 插到当天段落的末尾（最后一行非空内容之后），而不是紧跟卡片 ID 行：
+  // 卡片后面可能跟着用户手写的缩进待办，新卡片插在中间会把它们挂到新卡片下面
+  let last = -1;
   for (let i = hi + 1; i < lines.length; i++) {
     if (/^##[ \t]/.test(lines[i])) break;
-    if (QM_CARD_RE.test(lines[i])) {
-      lastCard = qmCardBlockEnd(lines, i);
-      i = lastCard;
-    }
+    if (lines[i].trim()) last = i;
   }
 
-  if (lastCard >= 0) {
-    lines.splice(lastCard + 1, 0, ...entryLines);
+  if (last >= 0) {
+    lines.splice(last + 1, 0, ...entryLines);
     return lines.join('\n');
   }
 
@@ -176,6 +218,59 @@ function qmPruneEmptyDateSections(content, onlyDate) {
 }
 
 /**
+ * 把恢复的卡片插回文件：日期段不存在时按日期升序补出来，
+ * 段内按时间顺序插到合适位置。只插入，不覆盖任何已有行。
+ */
+function qmInsertRestoredCard(content, date, time, entryLines) {
+  const raw = String(content || '').replace(/\r\n?/g, '\n');
+  const lines = raw.split('\n');
+
+  const hRe = /^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/;
+
+  let hi = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(hRe);
+    if (m && m[1] === date) { hi = i; break; }
+  }
+
+  if (hi === -1) {
+    // 日期段不在了：按日期升序找到该插入的位置，整段补出来
+    let at = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(hRe);
+      if (m && m[1] > date) { at = i; break; }
+    }
+    const head = lines.slice(0, at);
+    const tail = lines.slice(at);
+    while (head.length && !head[head.length - 1].trim()) head.pop();
+    while (tail.length && !tail[0].trim()) tail.shift();
+
+    const out = head.concat(head.length ? [''] : [], ['## ' + date, ''], entryLines);
+    if (tail.length) out.push('', ...tail);
+    return out.join('\n').replace(/\n+$/, '') + '\n';
+  }
+
+  // 已有该日期段：找到最后一张「时间不晚于它」的卡片，插在它后面
+  let at = hi + 1;
+  for (let i = hi + 1; i < lines.length; i++) {
+    if (/^##[ \t]/.test(lines[i])) break;
+    const cm = lines[i].match(QM_CARD_RE);
+    if (!cm) continue;
+    const end = qmCardBlockEnd(lines, i);
+    if (padTime(cm[1]) <= time) at = end + 1;
+    i = end;
+  }
+
+  if (at === hi + 1) {
+    if (lines[at] !== undefined && !lines[at].trim()) lines.splice(at + 1, 0, ...entryLines);
+    else lines.splice(at, 0, '', ...entryLines);
+  } else {
+    lines.splice(at, 0, ...entryLines);
+  }
+  return lines.join('\n');
+}
+
+/**
  * 卡片正文 -> 可直接粘贴进 md 的纯文本。
  * 多行时给非空行补两个尾随空格（Markdown 硬换行），阅读视图也能保留排版；
  * 单行卡片原样返回，不添任何多余字符。
@@ -198,6 +293,9 @@ function parseCards(content, filePath) {
   const cards = [];
   let curDate = '';
   const fileBase = baseOf(filePath);
+  // 同一文件、同一日期段里首行完全相同的卡片，按出现顺序编号，
+  // 用于没有块 ID 的旧卡片在写入前重新定位
+  const dupSeen = new Map();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -243,6 +341,10 @@ function parseCards(content, filePath) {
     let tm;
     while ((tm = tagRe.exec(body)) !== null) tags.push(tm[1]);
 
+    const dupKey = (curDate || '') + '\u0000' + line;
+    const dupIndex = dupSeen.get(dupKey) || 0;
+    dupSeen.set(dupKey, dupIndex + 1);
+
     cards.push({
       date: curDate || '未分组',
       time: padTime(cm[1]),
@@ -252,6 +354,7 @@ function parseCards(content, filePath) {
       lineEnd: end,
       id,
       idOnLastLine,
+      dupIndex,
       raw: line,
       filePath,
       fileBase,
@@ -261,6 +364,35 @@ function parseCards(content, filePath) {
   }
 
   return cards;
+}
+
+/**
+ * 在「刚读到的文件内容」里重新定位卡片，写入前必须先过这一关。
+ * 顺序：块 ID 精确 → 同日期段第 N 条同文 → 正文唯一匹配。
+ * 只有唯一命中才返回，否则返回 null：宁可不写，也不动错对象。
+ */
+function qmLocateCard(content, card) {
+  if (!card || !card.filePath) return null;
+  const cards = parseCards(content, card.filePath);
+
+  if (card.id) {
+    const hits = cards.filter((c) => c.id === card.id);
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) {
+      // 手工复制粘贴可能造出重复 ID：再按时间 + 正文挑唯一的一条
+      const exact = hits.filter((c) => c.time === card.time && c.body === card.body);
+      return exact.length === 1 ? exact[0] : null;
+    }
+    return null; // ID 找不到：文件已在别处被改过
+  }
+
+  // 旧卡片没有块 ID：同日期段 + 同首行 + 序号
+  const same = cards.filter((c) => c.date === card.date && c.raw === card.raw);
+  if (!same.length) return null;
+  const i = typeof card.dupIndex === 'number' ? card.dupIndex : 0;
+  if (same[i] && same[i].body === card.body) return same[i];
+  const byBody = same.filter((c) => c.body === card.body);
+  return byBody.length === 1 ? byBody[0] : null;
 }
 
 function sortCards(cards) {
@@ -539,6 +671,72 @@ class ConfirmModal extends Modal {
       this.close();
       this.onConfirm();
     };
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 最近删除                                                            */
+/* ------------------------------------------------------------------ */
+
+class TrashModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('div', { text: '最近删除', cls: 'qm-modal-title' });
+
+    const list = Array.isArray(this.plugin.settings.trash) ? this.plugin.settings.trash : [];
+
+    if (!list.length) {
+      contentEl.createEl('div', { text: '还没有删除过卡片。', cls: 'qm-hint' });
+    } else {
+      contentEl.createEl('div', {
+        text: '恢复会按日期和时间插回原文件，只做插入，不会覆盖其它内容。最多保留 20 条。',
+        cls: 'qm-hint',
+      });
+
+      const wrap = contentEl.createDiv({ cls: 'qm-trash-list' });
+      for (const it of list) {
+        const row = wrap.createDiv({ cls: 'qm-trash-item' });
+        row.createDiv({
+          cls: 'qm-trash-meta',
+          text: (it.date || '未分组') + ' ' + (it.time || ''),
+        });
+        const txt = String(it.body || '').replace(/\s*\n\s*/g, ' ⏎ ');
+        row.createDiv({ cls: 'qm-trash-body', text: txt || '（空）' });
+
+        const acts = row.createDiv({ cls: 'qm-trash-acts' });
+        const undo = acts.createEl('button', { text: '恢复', cls: 'qm-mini-btn is-primary' });
+        undo.onclick = async () => {
+          await this.plugin.restoreTrash(it.uid);
+          this.onOpen();
+        };
+        const drop = acts.createEl('button', { text: '丢弃', cls: 'qm-mini-btn' });
+        drop.onclick = async () => {
+          await this.plugin.dropTrash(it.uid);
+          this.onOpen();
+        };
+      }
+    }
+
+    const bar = contentEl.createDiv({ cls: 'qm-edit-bar' });
+    if (list.length) {
+      const clear = bar.createEl('button', { text: '清空', cls: 'qm-mini-btn' });
+      clear.onclick = async () => {
+        await this.plugin.clearTrash();
+        this.onOpen();
+      };
+    }
+    const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
+    close.onclick = () => this.close();
   }
 
   onClose() {
@@ -838,7 +1036,10 @@ class CardsView extends ItemView {
     /* ---- 底部栏 ---- */
     const footer = wrap.createDiv({ cls: 'qm-footer' });
     this.footerInfoEl = footer.createSpan({ cls: 'qm-footer-info', text: '' });
-    const openFile = footer.createSpan({ cls: 'qm-open-file', text: '打开本月文件' });
+    const right = footer.createDiv({ cls: 'qm-footer-right' });
+    this.trashEl = right.createSpan({ cls: 'qm-open-file qm-trash-open', text: '' });
+    this.trashEl.onclick = () => new TrashModal(this.app, this.plugin).open();
+    const openFile = right.createSpan({ cls: 'qm-open-file', text: '打开本月文件' });
     openFile.onclick = () => this.plugin.openCurrentMonthFile();
 
     const onChange = (f) => {
@@ -1036,6 +1237,12 @@ class CardsView extends ItemView {
       }
     }
 
+    if (this.trashEl) {
+      const n = (this.plugin.settings.trash || []).length;
+      this.trashEl.setText(n ? '最近删除 ' + n : '');
+      this.trashEl.toggleClass('is-hidden', !n);
+    }
+
     if (!list.length) {
       const empty = el.createDiv({ cls: 'qm-empty' });
       if (this.state.cards.length === 0) {
@@ -1057,7 +1264,19 @@ class CardsView extends ItemView {
   }
 
   cardKey(card) {
-    return (card.filePath || '') + '|' + (card.id || card.date + '|' + card.time + '|' + card.body);
+    if (card.id) return (card.filePath || '') + '|' + card.id;
+    // 没有块 ID 时加上同文序号，避免两条一模一样的卡片共用同一个编辑态
+    return (
+      (card.filePath || '') +
+      '|' +
+      card.date +
+      '|' +
+      card.time +
+      '|' +
+      (typeof card.dupIndex === 'number' ? card.dupIndex : 0) +
+      '|' +
+      card.body
+    );
   }
 
   renderCard(parent, card) {
@@ -1187,15 +1406,39 @@ class QuickMemoSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('卡片文件夹')
-      .setDesc('卡片按月存成 YYYY-MM.md，放在这个文件夹里。文件夹不存在会自动创建。')
-      .addText((t) =>
-        t.setValue(this.plugin.settings.folderPath).onChange(async (v) => {
-          const val = String(v || '').trim().replace(/^\/+|\/+$/g, '');
-          if (!val) return;
+      .setDesc(
+        '卡片按月存成 YYYY-MM.md。文件夹不存在会自动创建；切换时会先检查目标文件夹里已有的年月文件，' +
+          '发现不像卡片文件（比如日记、剪藏）就拒绝切换，避免误改别的笔记。'
+      )
+      .addText((t) => {
+        t.setValue(this.plugin.settings.folderPath);
+        const apply = async () => {
+          const val = String(t.getValue() || '').trim().replace(/^\/+|\/+$/g, '');
+          if (!val || val === this.plugin.settings.folderPath) {
+            t.setValue(this.plugin.settings.folderPath);
+            return;
+          }
+          const check = await this.plugin.validateFolderTarget(val);
+          if (!check.ok) {
+            new Notice('未切换：' + check.reason, 8000);
+            t.setValue(this.plugin.settings.folderPath);
+            return;
+          }
           this.plugin.settings.folderPath = val;
           await this.plugin.saveSettings();
-        })
-      );
+          new Notice('卡片文件夹已切换到 ' + val);
+        };
+        t.inputEl.addEventListener('blur', () => {
+          apply();
+        });
+        t.inputEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            apply();
+            t.inputEl.blur();
+          }
+        });
+      });
 
     new Setting(containerEl)
       .setName('常用标签')
@@ -1273,9 +1516,12 @@ class QuickMemoPlugin extends Plugin {
     if (!Array.isArray(this.settings.quickTags)) {
       this.settings.quickTags = DEFAULT_SETTINGS.quickTags.slice();
     }
-    if (!this.settings.folderPath) {
-      this.settings.folderPath = DEFAULT_SETTINGS.folderPath;
+    if (!Array.isArray(this.settings.trash)) {
+      this.settings.trash = [];
     }
+
+    const folder = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
+    this.settings.folderPath = folder && folder !== '.' ? folder : DEFAULT_SETTINGS.folderPath;
   }
 
   async saveSettings() {
@@ -1285,10 +1531,60 @@ class QuickMemoPlugin extends Plugin {
 
   /* ---------------- 路径 ---------------- */
 
+  folderPathSafe() {
+    const raw = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
+    return raw === '.' ? '' : raw;
+  }
+
   monthPath(m) {
-    const folder = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
+    const folder = this.folderPathSafe();
     const name = m.format('YYYY-MM') + '.md';
     return folder ? folder + '/' + name : name;
+  }
+
+  /**
+   * 写入前的路径断言：只允许改「当前文件夹下、按月命名」的文件，
+   * 卡片日期所在月份还必须与文件名一致。跨月归档、目录被改指时直接拦下。
+   */
+  checkManagedFile(file, cardDate) {
+    const folder = this.folderPathSafe();
+    if (!folder) return { ok: false, reason: '还没有设置卡片文件夹' };
+    if (!(file instanceof TFile)) return { ok: false, reason: '卡片文件已不存在' };
+    if (!MONTH_FILE_RE.test(file.name)) return { ok: false, reason: '目标文件不是按月卡片文件' };
+    const parent = String(file.path).split('/').slice(0, -1).join('/');
+    if (parent !== folder) return { ok: false, reason: '卡片文件不在当前文件夹里' };
+    if (cardDate && /^\d{4}-\d{2}-\d{2}$/.test(cardDate) && cardDate.slice(0, 7) !== baseOf(file.path)) {
+      return { ok: false, reason: '卡片日期与文件月份不一致' };
+    }
+    return { ok: true };
+  }
+
+  /** 切换文件夹前的体检：不允许把不像卡片的年月文件接管过来 */
+  async validateFolderTarget(path) {
+    const val = String(path || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!val) return { ok: false, reason: '文件夹不能为空' };
+    if (val.indexOf('..') !== -1) return { ok: false, reason: '路径里不能出现 ..' };
+    if (val === '.obsidian' || val.indexOf('.obsidian/') === 0) {
+      return { ok: false, reason: '不能放在 .obsidian 里' };
+    }
+
+    const af = this.app.vault.getAbstractFileByPath(val);
+    if (af && !(af instanceof TFolder)) return { ok: false, reason: '这是一个文件，不是文件夹' };
+    if (!(af instanceof TFolder)) return { ok: true }; // 不存在：首次写入时创建
+
+    const months = af.children.filter((f) => f instanceof TFile && MONTH_FILE_RE.test(f.name));
+    for (const f of months) {
+      let content = '';
+      try {
+        content = await this.app.vault.cachedRead(f);
+      } catch (e) {
+        continue;
+      }
+      if (!qmLooksLikeCardFile(content)) {
+        return { ok: false, reason: f.name + ' 里有卡片以外的内容，像是别的笔记' };
+      }
+    }
+    return { ok: true };
   }
 
   async ensureFolder(dir) {
@@ -1350,12 +1646,54 @@ class QuickMemoPlugin extends Plugin {
   /* ---------------- 写入 ---------------- */
 
   async mutateFile(path, fn) {
+    const folder = this.folderPathSafe();
+    const name = String(path).split('/').pop();
+    if (!folder || String(path).indexOf(folder + '/') !== 0 || !MONTH_FILE_RE.test(name)) {
+      throw new Error('拒绝写入非卡片文件：' + path);
+    }
     const file = await this.ensureFileAt(path);
     await this.app.vault.process(file, (data) => {
       const res = fn(String(data || ''));
       return typeof res === 'string' ? res : data;
     });
     this.notifyViews();
+  }
+
+  /**
+   * 针对既有卡片的写入：先按当前文件内容重新定位，定位不到就不写。
+   * 这样即使卡片在别处被改过（编辑器、同步、另一个窗口），也不会误删误改。
+   */
+  async mutateCardFile(card, fn) {
+    const file = this.app.vault.getAbstractFileByPath(card.filePath);
+    const guard = this.checkManagedFile(file, card.date);
+    if (!guard.ok) return guard;
+
+    let out = { ok: false, reason: '文件已在别处修改，已刷新' };
+    await this.app.vault.process(file, (data) => {
+      const content = String(data || '').replace(/\r\n?/g, '\n');
+      const hit = qmLocateCard(content, card);
+      if (!hit) {
+        out = { ok: false, reason: '这条卡片已经不在原位了' };
+        return data;
+      }
+      const res = fn(content.split('\n'), hit);
+      if (typeof res !== 'string') {
+        out = { ok: false, reason: '这条卡片已经不在原位了' };
+        return data;
+      }
+      out = { ok: true, hit };
+      return res;
+    });
+    this.notifyViews();
+    return out;
+  }
+
+  uniqueIdIn(content) {
+    const ids = qmCollectIds(content);
+    let id = genId();
+    let guard = 0;
+    while (ids.has(id) && guard++ < 50) id = genId();
+    return id;
   }
 
   notifyViews() {
@@ -1378,35 +1716,14 @@ class QuickMemoPlugin extends Plugin {
       new Notice('写点什么再记下吧');
       return;
     }
-    const entryLines = qmFormatEntry(time, bodyLines, genId());
 
-    await this.mutateFile(path, (content) =>
-      qmInsertCardLines(content, date, entryLines)
-    );
+    await this.mutateFile(path, (content) => {
+      // ID 在文件内必须唯一，否则 Obsidian 的块引用会指错
+      const id = this.uniqueIdIn(content);
+      return qmInsertCardLines(content, date, qmFormatEntry(time, bodyLines, id));
+    });
 
     new Notice('已记下');
-  }
-
-  /* ---------------- 定位 ---------------- */
-
-  /** 定位卡片首行：优先原始行，其次按块 ID 向上回溯，最后全文找原文 */
-  cardStartLine(lines, card) {
-    if (typeof card.lineIndex === 'number' && lines[card.lineIndex] === card.raw) {
-      return card.lineIndex;
-    }
-    if (card.id) {
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].indexOf('^' + card.id) === -1) continue;
-        for (let j = i; j >= 0; j--) {
-          if (QM_CARD_RE.test(lines[j])) return j;
-          if (j < i && !/^[ \t]/.test(lines[j])) break;
-        }
-      }
-    }
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i] === card.raw) return i;
-    }
-    return -1;
   }
 
   /* ---------------- 补块 ID ---------------- */
@@ -1421,35 +1738,30 @@ class QuickMemoPlugin extends Plugin {
 
     let result = '';
 
-    await this.mutateFile(card.filePath, (content) => {
-      const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
-      const start = this.cardStartLine(lines, card);
-      if (start === -1) return content;
-      const end = qmCardBlockEnd(lines, start);
-
-      const onEnd = lines[end].match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
+    const res = await this.mutateCardFile(card, (lines, hit) => {
+      const onEnd = lines[hit.lineEnd].match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
       if (onEnd) {
         result = onEnd[1];
-        return content;
+        return lines.join('\n');
       }
 
       // 旧 ID 落在首行/中间行时 Obsidian 找不到：搬到末行，ID 保持不变，
       // 这样之前贴出去的引用不会突然失效
       let oldId = '';
-      for (let j = start; j < end; j++) {
+      for (let j = hit.lineIndex; j < hit.lineEnd; j++) {
         const m = lines[j].match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
         if (!m) continue;
         if (!oldId) oldId = m[1];
         lines[j] = lines[j].replace(/[ \t]\^[A-Za-z0-9-]+[ \t]*$/, '');
       }
 
-      const id = oldId || card.id || genId();
-      lines[end] = lines[end].replace(/[ \t]+$/, '') + ' ^' + id;
+      const id = oldId || card.id || this.uniqueIdIn(lines.join('\n'));
+      lines[hit.lineEnd] = lines[hit.lineEnd].replace(/[ \t]+$/, '') + ' ^' + id;
       result = id;
       return lines.join('\n');
     });
 
-    if (result) {
+    if (res.ok && result) {
       card.id = result;
       card.idOnLastLine = true;
     }
@@ -1464,37 +1776,140 @@ class QuickMemoPlugin extends Plugin {
       new Notice('内容不能为空');
       return;
     }
-    const entryLines = qmFormatEntry(card.time, bodyLines, card.id);
 
-    await this.mutateFile(card.filePath, (content) => {
-      const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
-      const start = this.cardStartLine(lines, card);
-      if (start === -1) return content;
-      const end = qmCardBlockEnd(lines, start);
-      lines.splice(start, end - start + 1, ...entryLines);
+    const res = await this.mutateCardFile(card, (lines, hit) => {
+      // 没有块 ID 的旧卡片顺手补一个，之后就走稳定路径，不再依赖指纹
+      const id = hit.id || card.id || this.uniqueIdIn(lines.join('\n'));
+      const entryLines = qmFormatEntry(hit.time, bodyLines, id);
+      lines.splice(hit.lineIndex, hit.lineEnd - hit.lineIndex + 1, ...entryLines);
       return lines.join('\n');
     });
 
-    new Notice('已更新');
+    if (res.ok) new Notice('已更新');
+    else new Notice('没有修改：' + res.reason);
   }
 
   /* ---------------- 删 ---------------- */
 
   async deleteCard(card) {
-    let removed = false;
+    let removed = null;
 
-    await this.mutateFile(card.filePath, (content) => {
-      const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
-      const start = this.cardStartLine(lines, card);
-      if (start === -1) return content;
-      const end = qmCardBlockEnd(lines, start);
-      lines.splice(start, end - start + 1);
-      removed = true;
+    const res = await this.mutateCardFile(card, (lines, hit) => {
+      removed = lines.slice(hit.lineIndex, hit.lineEnd + 1);
+      lines.splice(hit.lineIndex, hit.lineEnd - hit.lineIndex + 1);
       // 这一天的最后一条被删掉后，日期标题也一起收走
-      return qmPruneEmptyDateSections(lines.join('\n'), card.date);
+      return qmPruneEmptyDateSections(lines.join('\n'), hit.date);
     });
 
-    new Notice(removed ? '已删除' : '没有找到这条卡片');
+    if (!res.ok) {
+      new Notice('没有删除：' + res.reason);
+      return;
+    }
+
+    const entry = await this.pushTrash({
+      date: res.hit.date,
+      time: res.hit.time,
+      body: res.hit.body,
+      lines: removed,
+      filePath: card.filePath,
+    });
+
+    const n = new Notice('已删除 · 点此撤销', 9000);
+    try {
+      if (n && n.noticeEl) {
+        n.noticeEl.addClass('qm-undo-toast');
+        n.noticeEl.addEventListener('click', () => {
+          n.hide();
+          this.restoreTrash(entry.uid);
+        });
+      }
+    } catch (e) {
+      /* 无法加点击时仍可从「最近删除」恢复 */
+    }
+  }
+
+  /* ---------------- 回收站 ---------------- */
+
+  async pushTrash(item) {
+    const uid = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const entry = {
+      uid,
+      date: String(item.date || ''),
+      time: String(item.time || ''),
+      body: String(item.body || '').slice(0, 4000),
+      lines: Array.isArray(item.lines) ? item.lines.slice() : [],
+      filePath: String(item.filePath || ''),
+      deletedAt: Date.now(),
+    };
+    this.settings.trash.unshift(entry);
+    if (this.settings.trash.length > 20) this.settings.trash.length = 20;
+    await this.saveSettings();
+    return entry;
+  }
+
+  async dropTrash(uid) {
+    const i = this.settings.trash.findIndex((t) => t.uid === uid);
+    if (i === -1) return;
+    this.settings.trash.splice(i, 1);
+    await this.saveSettings();
+  }
+
+  async clearTrash() {
+    this.settings.trash = [];
+    await this.saveSettings();
+  }
+
+  async restoreTrash(uid) {
+    const i = this.settings.trash.findIndex((t) => t.uid === uid);
+    if (i === -1) {
+      new Notice('这条记录已经不在「最近删除」里了');
+      return;
+    }
+    const entry = this.settings.trash[i];
+    if (!entry.filePath) {
+      new Notice('无法恢复：这条记录里没有文件路径');
+      return;
+    }
+
+    const file = await this.ensureFileAt(entry.filePath);
+    const guard = this.checkManagedFile(file, entry.date);
+    if (!guard.ok) {
+      new Notice('无法恢复：' + guard.reason);
+      return;
+    }
+
+    let done = false;
+    await this.app.vault.process(file, (data) => {
+      const content = String(data || '').replace(/\r\n?/g, '\n');
+      const ids = qmCollectIds(content);
+
+      let lines = (entry.lines || []).slice();
+      if (!lines.length) {
+        lines = qmFormatEntry(entry.time || '00:00', qmBodyLines(entry.body), '');
+      }
+
+      // 拉出来的内容里已经有人占了同一个块 ID：换一个，避免链接指错
+      const last = lines.length - 1;
+      const m = String(lines[last] || '').match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
+      if (m && ids.has(m[1])) {
+        let nid = genId();
+        let guardN = 0;
+        while (ids.has(nid) && guardN++ < 50) nid = genId();
+        lines[last] = lines[last].replace(/[ \t]\^[A-Za-z0-9-]+[ \t]*$/, '') + ' ^' + nid;
+      }
+
+      done = true;
+      return qmInsertRestoredCard(content, entry.date, entry.time, lines);
+    });
+
+    if (!done) {
+      new Notice('恢复失败：目标文件不可写');
+      return;
+    }
+
+    this.settings.trash.splice(i, 1);
+    await this.saveSettings();
+    new Notice('已恢复');
   }
 
   /* ---------------- 其他 ---------------- */

@@ -1,7 +1,7 @@
 {
   "id": "collis",
   "name": "Collis",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "minAppVersion": "1.4.0",
   "description": "随手记录卡片笔记并保留多行排版，按月存入 Markdown 文件，支持标签联想与父子标签聚合.",
   "author": "Lak",
