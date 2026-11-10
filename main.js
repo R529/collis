@@ -23,7 +23,14 @@ const DEFAULT_SETTINGS = {
   blockRefEmbed: false,
   collapsedDates: [],
   strictCardId: true,
+  // 没提交完的手稿：{ text, at }。只存本机，不写进任何笔记文件
+  draft: { text: '', at: 0 },
 };
+
+/** 草稿保留多久（毫秒）。超过就当过期，不再自动填回输入框 */
+const DRAFT_TTL = 7 * 24 * 60 * 60 * 1000;
+/** 草稿最多存多少字符，防止误粘一整篇文章把配置撑大 */
+const DRAFT_MAX = 5000;
 
 const MONTH_FILE_RE = /^\d{4}-\d{2}\.md$/;
 
@@ -339,6 +346,49 @@ function qmPasteText(body) {
   return lines
     .map((l, i) => (i < lines.length - 1 && l.trim() ? l + '  ' : l))
     .join('\n');
+}
+
+/**
+ * 把卡片正文拆成「纯文本 / 标签 / 网址」三类片段，交给渲染层决定怎么画。
+ * 只认裸网址（http/https 开头，长什么样就显示什么样）；
+ * 不认双链 [[...]]、不认 [文字](网址)、不认加粗代码——正文在文件里始终是纯文本，
+ * 这里只影响显示，不改一个字符。
+ */
+function qmBodySegments(body) {
+  const text = String(body == null ? '' : body);
+  const out = [];
+  if (!text) return out;
+
+  // 一次扫完：要么是 #标签，要么是 http(s) 开头的裸网址
+  // 网址里可能带 #（锚点），所以两个分支放在同一个正则里，交给引擎从左往右取
+  const re = /#([^\s#\[\]()]+)|\bhttps?:\/\/[^\s<>"'，。；：！？、（）【】《》]+/g;
+  const pushText = (s) => {
+    if (s) out.push({ kind: 'text', text: s });
+  };
+
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[0];
+    const at = m.index;
+    if (at > last) pushText(text.slice(last, at));
+
+    if (raw.charAt(0) === '#') {
+      out.push({ kind: 'tag', text: raw, value: m[1] });
+      last = at + raw.length;
+      continue;
+    }
+
+    // 网址后面常跟着句号、逗号、右括号，这些不属于链接本身
+    const trimmed = raw.replace(/[.,;:!?)\]}]+$/, '');
+    out.push({ kind: 'url', text: trimmed });
+    last = at + trimmed.length;
+    // 被剪掉的标点要从这里重新扫，否则会整段丢掉
+    re.lastIndex = last;
+  }
+
+  if (last < text.length) pushText(text.slice(last));
+  return out;
 }
 
 /**
@@ -926,6 +976,16 @@ class CaptureModal extends Modal {
     const ta = taWrap.createEl('textarea', { cls: 'qm-input qm-modal-input' });
     ta.setAttr('placeholder', '想到什么就写什么，不需要标题…（输入 # 选择标签）');
     ta.rows = 5;
+    this._ta = ta;
+    this._closingBySubmit = false;
+
+    // 上次没记完的内容填回来，下面留一行说明。想清空直接删字，不给「丢弃」按钮
+    const draft = this.plugin.draftAlive();
+    if (draft) {
+      ta.value = draft;
+      taWrap.createDiv({ cls: 'qm-draft-hint', text: '已恢复上次没记完的内容' });
+    }
+    ta.addEventListener('input', () => this.plugin.queueDraft(ta.value));
 
     // 标签候选只在打开弹窗时取一次：打字过程中查的是这份快照，不再每次按键读盘
     const tagList = [];
@@ -980,15 +1040,28 @@ class CaptureModal extends Modal {
 
   async submit(value) {
     const text = String(value || '').trim();
+    // 草稿由这里统一处理，告诉 onClose 别再抢着写一遍
+    this._closingBySubmit = true;
     if (!text) {
       this.close();
+      await this.plugin.clearDraft();
       return;
     }
     this.close();
-    await this.plugin.appendCard(text);
+    if (await this.plugin.appendCard(text)) {
+      await this.plugin.clearDraft();
+    } else {
+      // 没记下：把内容留成草稿，下次打开还能捡回来
+      await this.plugin.saveDraft(text);
+    }
   }
 
   onClose() {
+    // 直接关掉（Esc / 点外面）时不丢内容
+    if (!this._closingBySubmit && this._ta) {
+      const v = String(this._ta.value || '');
+      if (v.trim()) void this.plugin.saveDraft(v);
+    }
     if (this._suggest) {
       this._suggest.destroy();
       this._suggest = null;
@@ -1177,7 +1250,28 @@ class CardsView extends ItemView {
       this.inputEl.style.height = 'auto';
       this.inputEl.style.height = Math.min(200, this.inputEl.scrollHeight) + 'px';
     };
-    this.inputEl.addEventListener('input', this.autoGrow);
+
+    // 上次没记完的内容：填回来，下面留一行说明。不设「丢弃」按钮——
+    // 想清空直接删字，跟平时编辑一样，免得手滑一下内容就没了
+    this.draftHintEl = null;
+    const draft = this.plugin.draftAlive();
+    if (draft) {
+      this.inputEl.value = draft;
+      this.autoGrow();
+      this.draftHintEl = inputWrap.createDiv({
+        cls: 'qm-draft-hint',
+        text: '已恢复上次没记完的内容',
+      });
+    }
+
+    this.inputEl.addEventListener('input', () => {
+      this.autoGrow();
+      if (this.draftHintEl && !this.inputEl.value.trim()) {
+        this.draftHintEl.remove();
+        this.draftHintEl = null;
+      }
+      this.plugin.queueDraft(this.inputEl.value);
+    });
 
     this.tagSuggest = new TagSuggest(this.inputEl, inputWrap, () => this.tagPool());
 
@@ -1262,6 +1356,14 @@ class CardsView extends ItemView {
   }
 
   async onClose() {
+    // 没提交的内容存下来，重开面板还在。
+    // 如果这次是从草稿恢复的、又被删空了，说明不要了，顺手清掉；
+    // 否则空输入框不动草稿（别把快捷弹窗里正在写的内容误删）。
+    if (this.inputEl) {
+      const v = String(this.inputEl.value || '');
+      if (v.trim()) void this.plugin.saveDraft(v);
+      else if (this.draftHintEl) void this.plugin.clearDraft();
+    }
     if (this._searchTimer) {
       clearTimeout(this._searchTimer);
       this._searchTimer = null;
@@ -1315,9 +1417,16 @@ class CardsView extends ItemView {
       new Notice('写点什么再记下吧');
       return;
     }
+    // 先写文件，成功了才清空。写失败就留在框里，不许「两边都丢」
+    const ok = await this.plugin.appendCard(text);
+    if (!ok) return;
     this.inputEl.value = '';
     if (this.autoGrow) this.autoGrow();
-    await this.plugin.appendCard(text);
+    if (this.draftHintEl) {
+      this.draftHintEl.remove();
+      this.draftHintEl = null;
+    }
+    await this.plugin.clearDraft();
     this.inputEl.focus();
   }
 
@@ -1765,30 +1874,43 @@ class CardsView extends ItemView {
       return;
     }
 
-    /* ---- 正文本（标签高亮） ---- */
+    /* ---- 正文本（标签高亮、裸网址可点） ---- */
     const body = box.createDiv({ cls: 'qm-body' });
-    const re = /#([^\s#\[\]()]+)/g;
-    let last = 0;
-    let m;
-    while ((m = re.exec(card.body)) !== null) {
-      if (m.index > last) {
-        body.appendChild(document.createTextNode(card.body.slice(last, m.index)));
+    for (const seg of qmBodySegments(card.body)) {
+      if (seg.kind === 'text') {
+        body.appendChild(document.createTextNode(seg.text));
+        continue;
       }
-      const tag = body.createSpan({ cls: 'qm-tag', text: m[0] });
-      const tv = m[1];
-      tag.onclick = (e) => {
+      if (seg.kind === 'tag') {
+        const tag = body.createSpan({ cls: 'qm-tag', text: seg.text });
+        tag.onclick = (e) => {
+          e.stopPropagation();
+          // 多选模式下点标签等同于点这张卡片，避免误触发筛选
+          if (this.state.selectMode) {
+            this.toggleSelected(card);
+            return;
+          }
+          this.setTag(seg.value);
+        };
+        continue;
+      }
+      // 网址：点了用系统浏览器打开。多选模式下仍然算「选中这张卡片」
+      const link = body.createEl('a', { cls: 'qm-url', text: seg.text });
+      link.setAttr('href', seg.text);
+      link.setAttr('rel', 'noopener');
+      link.onclick = (e) => {
+        e.preventDefault();
         e.stopPropagation();
-        // 多选模式下点标签等同于点这张卡片，避免误触发筛选
         if (this.state.selectMode) {
           this.toggleSelected(card);
           return;
         }
-        this.setTag(tv);
+        try {
+          window.open(seg.text, '_blank');
+        } catch (err) {
+          new Notice('打不开这个链接');
+        }
       };
-      last = m.index + m[0].length;
-    }
-    if (last < card.body.length) {
-      body.appendChild(document.createTextNode(card.body.slice(last)));
     }
 
     /* ---- 操作（多选模式下隐藏，点整块即选中） ---- */
@@ -1965,6 +2087,17 @@ class QuickMemoPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
+    // 过期的草稿顺手清掉，别一直躺在配置里占地方
+    // （草稿只在本机配置里，永远不进笔记文件）
+    if (this.settings.draft && this.settings.draft.text && !this.draftAlive()) {
+      this.settings.draft = { text: '', at: 0 };
+      try {
+        await this.saveData(this.settings);
+      } catch (e) {
+        /* 存不进去不影响启动 */
+      }
+    }
+
     this.registerView(VIEW_TYPE_QM, (leaf) => new CardsView(leaf, this));
 
     this.addRibbonIcon('message-square', 'Collis', async () => {
@@ -2030,6 +2163,10 @@ class QuickMemoPlugin extends Plugin {
     if (typeof this.settings.strictCardId !== 'boolean') {
       this.settings.strictCardId = true;
     }
+    const d = this.settings.draft;
+    if (!d || typeof d !== 'object' || typeof d.text !== 'string' || typeof d.at !== 'number') {
+      this.settings.draft = { text: '', at: 0 };
+    }
 
     const folder = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
     this.settings.folderPath = folder && folder !== '.' ? folder : DEFAULT_SETTINGS.folderPath;
@@ -2042,6 +2179,64 @@ class QuickMemoPlugin extends Plugin {
   async saveSettings(reload = true) {
     await this.saveData(this.settings);
     this.notifyViews(reload ? null : { light: true });
+  }
+
+  /* ---------------- 没提交完的手稿 ----------------
+   * 只存在插件配置里（data.json），不写进任何笔记文件，
+   * 也不会自己变成卡片：它只是把字填回输入框，还得你自己按保存。
+   */
+
+  /** 还有效的草稿内容；没有、为空白或超过 7 天都返回空串 */
+  draftAlive() {
+    const d = this.settings.draft;
+    if (!d || typeof d.text !== 'string') return '';
+    if (!d.text.trim()) return '';
+    if (!d.at || Date.now() - d.at > DRAFT_TTL) return '';
+    return d.text;
+  }
+
+  /** 打字时用这个：停顿 1.5 秒才写盘，不打断输入 */
+  queueDraft(text) {
+    if (this._draftTimer) clearTimeout(this._draftTimer);
+    this._draftTimer = setTimeout(() => {
+      this._draftTimer = null;
+      this.saveDraft(text);
+    }, 1500);
+  }
+
+  /** 立即落盘（关掉输入框时用；会把防抖里那次一并落地） */
+  async saveDraft(text) {
+    if (this._draftTimer) {
+      clearTimeout(this._draftTimer);
+      this._draftTimer = null;
+    }
+    const raw = String(text == null ? '' : text).slice(0, DRAFT_MAX);
+    if (!raw.trim()) {
+      await this.clearDraft();
+      return;
+    }
+    this.settings.draft = { text: raw, at: Date.now() };
+    try {
+      await this.saveData(this.settings);
+    } catch (e) {
+      /* 配置写不进去也不该影响书写 */
+    }
+  }
+
+  /** 保存成功后清掉 */
+  async clearDraft() {
+    if (this._draftTimer) {
+      clearTimeout(this._draftTimer);
+      this._draftTimer = null;
+    }
+    const d = this.settings.draft;
+    if (!d || (!d.text && !d.at)) return;
+    this.settings.draft = { text: '', at: 0 };
+    try {
+      await this.saveData(this.settings);
+    } catch (e) {
+      /* 忽略 */
+    }
   }
 
   /* ---------------- 路径 ---------------- */
@@ -2456,16 +2651,22 @@ class QuickMemoPlugin extends Plugin {
     const bodyLines = qmBodyLines(text);
     if (!bodyLines.length) {
       new Notice('写点什么再记下吧');
-      return;
+      return false;
     }
 
-    await this.mutateFile(path, (content) => {
-      // ID 在文件内必须唯一，否则 Obsidian 的块引用会指错
-      const id = this.uniqueIdIn(content);
-      return qmInsertCardLines(content, date, qmFormatEntry(time, bodyLines, id));
-    });
+    try {
+      await this.mutateFile(path, (content) => {
+        // ID 在文件内必须唯一，否则 Obsidian 的块引用会指错
+        const id = this.uniqueIdIn(content);
+        return qmInsertCardLines(content, date, qmFormatEntry(time, bodyLines, id));
+      });
+    } catch (e) {
+      new Notice('没记下来：' + (e && e.message ? e.message : '未知原因'), 8000);
+      return false;
+    }
 
     new Notice('已记下');
+    return true;
   }
 
   /* ---------------- 补块 ID ---------------- */
@@ -2832,3 +3033,5 @@ class QuickMemoPlugin extends Plugin {
 }
 
 module.exports = QuickMemoPlugin;
+// 便于本地测试直接构造弹窗；Obsidian 只关心 module.exports 本身
+module.exports.CaptureModal = CaptureModal;

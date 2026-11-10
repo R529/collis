@@ -323,6 +323,18 @@
   text-decoration: underline;
 }
 
+/* 卡片正文里的裸网址：可点，长网址在原位折行 */
+.qm-url {
+  color: var(--text-accent);
+  text-decoration: none;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.qm-url:hover {
+  text-decoration: underline;
+}
+
 .qm-body {
   font-size: 13px;
   line-height: 1.55;
@@ -428,6 +440,13 @@
   font-size: 11px;
   color: var(--text-faint);
   margin: 6px 0 2px 0;
+}
+
+/* 输入框下方：这是上次没记完、被自动填回来的内容 */
+.qm-draft-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 6px 0 0 0;
 }
 
 .qm-confirm-text {
