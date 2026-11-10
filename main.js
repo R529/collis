@@ -979,13 +979,23 @@ class CaptureModal extends Modal {
     this._ta = ta;
     this._closingBySubmit = false;
 
-    // 上次没记完的内容填回来，下面留一行说明。想清空直接删字，不给「丢弃」按钮
+    // 上次没记完的内容填回来，下面留一行说明。想清空直接删字，不给「丢弃」按钮。
+    // 提示只在「还没动过」的时候显示，你一敲字就收掉，免得一直挂在窗口里。
+    this._draftHintEl = null;
+    this._draftRestored = false;
     const draft = this.plugin.draftAlive();
     if (draft) {
       ta.value = draft;
-      taWrap.createDiv({ cls: 'qm-draft-hint', text: '已恢复上次没记完的内容' });
+      this._draftRestored = true;
+      this._draftHintEl = taWrap.createDiv({
+        cls: 'qm-draft-hint',
+        text: '已恢复上次没记完的内容',
+      });
     }
-    ta.addEventListener('input', () => this.plugin.queueDraft(ta.value));
+    ta.addEventListener('input', () => {
+      this.dismissDraftHint();
+      this.plugin.queueDraft(ta.value);
+    });
 
     // 标签候选只在打开弹窗时取一次：打字过程中查的是这份快照，不再每次按键读盘
     const tagList = [];
@@ -1012,6 +1022,7 @@ class CaptureModal extends Modal {
         chip.onclick = () => {
           const cur = ta.value;
           ta.value = cur.replace(/\s+$/, '') + (cur.trim() ? ' ' : '') + '#' + t + ' ';
+          this.dismissDraftHint();
           ta.focus();
         };
       }
@@ -1038,6 +1049,13 @@ class CaptureModal extends Modal {
     window.setTimeout(() => ta.focus(), 30);
   }
 
+  /** 开始改动就把「已恢复上次没记完的内容」收掉，不再一直显示 */
+  dismissDraftHint() {
+    if (!this._draftHintEl) return;
+    this._draftHintEl.remove();
+    this._draftHintEl = null;
+  }
+
   async submit(value) {
     const text = String(value || '').trim();
     // 草稿由这里统一处理，告诉 onClose 别再抢着写一遍
@@ -1049,6 +1067,7 @@ class CaptureModal extends Modal {
     }
     this.close();
     if (await this.plugin.appendCard(text)) {
+      this._draftRestored = false;
       await this.plugin.clearDraft();
     } else {
       // 没记下：把内容留成草稿，下次打开还能捡回来
@@ -1061,7 +1080,11 @@ class CaptureModal extends Modal {
     if (!this._closingBySubmit && this._ta) {
       const v = String(this._ta.value || '');
       if (v.trim()) void this.plugin.saveDraft(v);
+      // 从草稿恢复、又被你删空了：说明不要了。提示可能已经收掉，
+      // 所以看状态标记而不是看界面上还有没有那行字
+      else if (this._draftRestored) void this.plugin.clearDraft();
     }
+    this._draftHintEl = null;
     if (this._suggest) {
       this._suggest.destroy();
       this._suggest = null;
@@ -1252,11 +1275,14 @@ class CardsView extends ItemView {
     };
 
     // 上次没记完的内容：填回来，下面留一行说明。不设「丢弃」按钮——
-    // 想清空直接删字，跟平时编辑一样，免得手滑一下内容就没了
+    // 想清空直接删字，跟平时编辑一样，免得手滑一下内容就没了。
+    // 提示只在「还没动过」的时候显示，你一敲字就收掉。
     this.draftHintEl = null;
+    this._draftRestored = false;
     const draft = this.plugin.draftAlive();
     if (draft) {
       this.inputEl.value = draft;
+      this._draftRestored = true;
       this.autoGrow();
       this.draftHintEl = inputWrap.createDiv({
         cls: 'qm-draft-hint',
@@ -1266,10 +1292,7 @@ class CardsView extends ItemView {
 
     this.inputEl.addEventListener('input', () => {
       this.autoGrow();
-      if (this.draftHintEl && !this.inputEl.value.trim()) {
-        this.draftHintEl.remove();
-        this.draftHintEl = null;
-      }
+      this.dismissDraftHint();
       this.plugin.queueDraft(this.inputEl.value);
     });
 
@@ -1362,7 +1385,8 @@ class CardsView extends ItemView {
     if (this.inputEl) {
       const v = String(this.inputEl.value || '');
       if (v.trim()) void this.plugin.saveDraft(v);
-      else if (this.draftHintEl) void this.plugin.clearDraft();
+      // 提示行可能已经被收掉了，所以看状态标记而不是看界面上还有没有那行字
+      else if (this._draftRestored) void this.plugin.clearDraft();
     }
     if (this._searchTimer) {
       clearTimeout(this._searchTimer);
@@ -1403,11 +1427,19 @@ class CardsView extends ItemView {
     }, 150);
   }
 
+  /** 开始改动就把「已恢复上次没记完的内容」收掉，不再一直显示 */
+  dismissDraftHint() {
+    if (!this.draftHintEl) return;
+    this.draftHintEl.remove();
+    this.draftHintEl = null;
+  }
+
   insertTag(tag) {
     const cur = this.inputEl.value;
     const add = '#' + tag + ' ';
     const needsSpace = cur.length > 0 && !/\s$/.test(cur);
     this.inputEl.value = cur + (needsSpace ? ' ' : '') + add;
+    this.dismissDraftHint();
     this.inputEl.focus();
   }
 
@@ -1422,10 +1454,8 @@ class CardsView extends ItemView {
     if (!ok) return;
     this.inputEl.value = '';
     if (this.autoGrow) this.autoGrow();
-    if (this.draftHintEl) {
-      this.draftHintEl.remove();
-      this.draftHintEl = null;
-    }
+    this.dismissDraftHint();
+    this._draftRestored = false;
     await this.plugin.clearDraft();
     this.inputEl.focus();
   }
