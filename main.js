@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS = {
   autoPruneEmptyDates: true,
   blockRefEmbed: false,
   collapsedDates: [],
+  strictCardId: true,
 };
 
 const MONTH_FILE_RE = /^\d{4}-\d{2}\.md$/;
@@ -275,6 +276,14 @@ function qmInsertRestoredCard(content, date, time, entryLines) {
   const raw = String(content || '').replace(/\r\n?/g, '\n');
   const lines = raw.split('\n');
 
+  // 不在任何日期段里的卡片（date 不是 YYYY-MM-DD）：直接补到文件末尾，
+  // 不能凭空造一个「## 未分组」的标题出来
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const out = lines.concat(lines.length ? [''] : [], entryLines);
+    return out.join('\n').replace(/\n+$/, '') + '\n';
+  }
+
   const hRe = /^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/;
 
   let hi = -1;
@@ -338,7 +347,8 @@ function qmPasteText(body) {
  * 卡片续行：   正文（缩进两空格）
  * 日期段：   ## YYYY-MM-DD
  */
-function parseCards(content, filePath) {
+function parseCards(content, filePath, opts) {
+  const strict = !!(opts && opts.strict);
   const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
   const cards = [];
   let curDate = '';
@@ -369,6 +379,24 @@ function parseCards(content, filePath) {
     // Obsidian 只认「块最后一行」的 ^id；先记下末行是否已有合法 ID
     const lastPart = String(parts[parts.length - 1] || '').replace(/[ \t]+$/, '');
     const endId = lastPart.match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
+
+    // 严格模式：块内必须有块 ID 才算卡片。手写的「- 12:30 开会」没有块 ID，
+    // 就只是普通文字，不进面板、也不会被删。
+    // 注意不能只认「末行的 ID」：旧版卡片可能把 ID 写在首行或中间行，
+    // 那些卡片 Obsidian 虽然跳不过去，但仍然要留在面板里，否则等于把它们藏起来。
+    if (strict && !endId) {
+      let hasAnyId = false;
+      for (let j = i; j <= end; j++) {
+        if (/[ \t]\^[A-Za-z0-9-]{4,}[ \t]*$/.test(lines[j])) {
+          hasAnyId = true;
+          break;
+        }
+      }
+      if (!hasAnyId) {
+        i = end;
+        continue;
+      }
+    }
 
     // 去掉硬换行标记（行尾空格）；保留中间的换行与空行
     let body = parts
@@ -423,9 +451,9 @@ function parseCards(content, filePath) {
  * 顺序：块 ID 精确 → 同日期段第 N 条同文 → 正文唯一匹配。
  * 只有唯一命中才返回，否则返回 null：宁可不写，也不动错对象。
  */
-function qmLocateCard(content, card) {
+function qmLocateCard(content, card, opts) {
   if (!card || !card.filePath) return null;
-  const cards = parseCards(content, card.filePath);
+  const cards = parseCards(content, card.filePath, opts);
 
   if (card.id) {
     const hits = cards.filter((c) => c.id === card.id);
@@ -899,23 +927,27 @@ class CaptureModal extends Modal {
     ta.setAttr('placeholder', '想到什么就写什么，不需要标题…（输入 # 选择标签）');
     ta.rows = 5;
 
-    new TagSuggest(ta, taWrap, async () => {
-      const cards = await this.plugin.readAllCards();
-      return collectAllTags(cards, this.plugin.settings.quickTags);
-    });
+    // 标签候选只在打开弹窗时取一次：打字过程中查的是这份快照，不再每次按键读盘
+    const tagList = [];
+    const suggest = new TagSuggest(ta, taWrap, () => tagList);
+    this._suggest = suggest;
 
-    // 快捷标签：只显示当前卡片里真实存在的标签（已清理的不会残留）
     (async () => {
-      let live = [];
+      let tags = [];
       try {
-        const cards = await this.plugin.readAllCards();
-        live = collectAllTags(cards, this.plugin.settings.quickTags).slice(0, 8);
+        const cards = await this.plugin.cardsForSuggest();
+        tags = collectAllTags(cards, this.plugin.settings.quickTags);
       } catch (e) {
-        live = [];
+        tags = [];
       }
-      if (!live.length) return;
+      if (!tags.length) return;
+
+      // 同一个数组给联想和快捷标签共用，只有一份数据
+      tagList.push(...tags);
+      suggest.update();
+
       const bar = contentEl.createDiv({ cls: 'qm-quick-tags' });
-      for (const t of live) {
+      for (const t of tags.slice(0, 8)) {
         const chip = bar.createSpan({ text: '#' + t, cls: 'qm-quick-tag' });
         chip.onclick = () => {
           const cur = ta.value;
@@ -957,6 +989,10 @@ class CaptureModal extends Modal {
   }
 
   onClose() {
+    if (this._suggest) {
+      this._suggest.destroy();
+      this._suggest = null;
+    }
     this.contentEl.empty();
   }
 }
@@ -1095,6 +1131,8 @@ class CardsView extends ItemView {
       search: '',
       activeTag: '',
       editingKey: null,
+      // 正在编辑但还没保存的文本：列表被重画时用它恢复，避免白打一遍
+      editingDraft: null,
       cards: [],
       tagbarExpanded: false,
       // 折叠的日期（只影响渲染，不改文件）
@@ -1141,9 +1179,7 @@ class CardsView extends ItemView {
     };
     this.inputEl.addEventListener('input', this.autoGrow);
 
-    this.tagSuggest = new TagSuggest(this.inputEl, inputWrap, () =>
-      collectAllTags(this.state ? this.state.cards : [], this.plugin.settings.quickTags)
-    );
+    this.tagSuggest = new TagSuggest(this.inputEl, inputWrap, () => this.tagPool());
 
     const toolbar = inputWrap.createDiv({ cls: 'qm-toolbar' });
     const saveBtn = toolbar.createEl('button', { text: '记下', cls: 'qm-save' });
@@ -1206,17 +1242,21 @@ class CardsView extends ItemView {
     const openFile = right.createSpan({ cls: 'qm-open-file', text: '打开本月文件' });
     openFile.onclick = () => this.plugin.openCurrentMonthFile();
 
-    const onChange = (f) => {
+    const onChange = async (f, oldPath) => {
       if (!(f instanceof TFile)) return;
-      const prefix = this.plugin.settings.folderPath;
-      if (f.path.indexOf(prefix + '/') !== 0) return;
-      if (!MONTH_FILE_RE.test(f.name)) return;
-      this.refresh();
+      // 改名/移动也要管：从卡片文件夹移出去时，路径已经是新的了，得看旧路径
+      const inFolder =
+        this.plugin.isCardFilePath(f.path) || (oldPath && this.plugin.isCardFilePath(oldPath));
+      if (!inFolder) return;
+      // 自己刚写完引起的那次「文件变了」不用重读：内存里已经是新内容了
+      if (await this.plugin.isOwnWrite(f)) return;
+      this.scheduleRefresh();
     };
 
     this.registerEvent(this.app.vault.on('modify', onChange));
     this.registerEvent(this.app.vault.on('create', onChange));
     this.registerEvent(this.app.vault.on('delete', onChange));
+    this.registerEvent(this.app.vault.on('rename', onChange));
 
     await this.refresh();
   }
@@ -1226,11 +1266,39 @@ class CardsView extends ItemView {
       clearTimeout(this._searchTimer);
       this._searchTimer = null;
     }
+    if (this._reloadTimer) {
+      clearTimeout(this._reloadTimer);
+      this._reloadTimer = null;
+    }
     if (this.tagSuggest) {
       this.tagSuggest.destroy();
       this.tagSuggest = null;
     }
     this.contentEl.empty();
+  }
+
+  /** 标签候选池：卡片数据没换就直接复用，避免每敲一个字重算一遍 */
+  tagPool() {
+    const cards = this.state ? this.state.cards : [];
+    if (!this._tagCache || this._tagCache.ref !== cards) {
+      this._tagCache = {
+        ref: cards,
+        list: collectAllTags(cards, this.plugin.settings.quickTags),
+      };
+    }
+    return this._tagCache.list;
+  }
+
+  /**
+   * 外部改动（编辑器手改、同步、别处写入）触发的重读。
+   * 编辑器里连续敲字会连发很多次 modify，合并成一次，别每敲一下重建整个列表。
+   */
+  scheduleRefresh() {
+    if (this._reloadTimer) clearTimeout(this._reloadTimer);
+    this._reloadTimer = setTimeout(() => {
+      this._reloadTimer = null;
+      this.refresh();
+    }, 150);
   }
 
   insertTag(tag) {
@@ -1254,9 +1322,64 @@ class CardsView extends ItemView {
   }
 
   async refresh() {
-    // 全量载入：搜索与标签筛选必须覆盖所有卡片
-    const cards = await this.plugin.readAllCards();
-    this.state.cards = cards;
+    // 正在读的时候又被要求刷新：记一笔，读完补一次，别叠着读几遍
+    if (this._refreshing) {
+      this._dirty = true;
+      return;
+    }
+    this._refreshing = true;
+    try {
+      // 全量载入：搜索与标签筛选必须覆盖所有卡片
+      const cards = await this.plugin.readAllCards();
+      if (!this.state) return;
+      this.state.cards = cards;
+      this._loadedOnce = true;
+      this.renderTagbar();
+      this.renderList();
+    } finally {
+      this._refreshing = false;
+      if (this._dirty) {
+        this._dirty = false;
+        this.refresh();
+      }
+    }
+  }
+
+  /**
+   * 插件自己写完一个文件后的定向更新：只重解析这一个文件，
+   * 换掉它在列表里的那部分，其它月份不重读。省掉一次整文件夹重读。
+   */
+  applyFileCards(path, content) {
+    if (!this.state) return;
+    // 面板还没完整加载过：这时候只替换一个文件会显得卡片变少了，直接走全量
+    if (!this._loadedOnce) {
+      this.refresh();
+      return;
+    }
+    const next = parseCards(content, path, {
+      strict: this.plugin.settings.strictCardId !== false,
+    });
+    const rest = this.state.cards.filter((c) => c.filePath !== path);
+    this.state.cards = sortCards(rest.concat(next));
+
+    // 选中集合里已经不存在（被删掉）的条目剔掉，免得批量删除带上幽灵条目
+    if (this.state.selected && this.state.selected.size) {
+      const alive = new Set(this.state.cards.map((c) => this.cardKey(c)));
+      for (const k of Array.from(this.state.selected)) {
+        if (!alive.has(k)) this.state.selected.delete(k);
+      }
+    }
+
+    this.renderTagbar();
+    this.renderList();
+
+    // 读的途中被替换过，可能又落后了，补一次全量收尾
+    if (this._refreshing) this._dirty = true;
+  }
+
+  /** 数据没变、只是要更新一下界面文字（比如「最近删除」条数） */
+  rerender() {
+    if (!this.state || !this._loadedOnce) return;
     this.renderTagbar();
     this.renderList();
   }
@@ -1597,8 +1720,13 @@ class CardsView extends ItemView {
     /* ---- 编辑态 ---- */
     if (this.state.editingKey === key) {
       const ta = box.createEl('textarea', { cls: 'qm-edit' });
-      ta.value = card.body;
-      ta.rows = Math.min(12, Math.max(2, card.body.split('\n').length + 1));
+      const draft = this.state.editingDraft;
+      ta.value = draft && draft.key === key ? draft.text : card.body;
+      ta.rows = Math.min(12, Math.max(2, String(ta.value).split('\n').length + 1));
+      // 边打边留一份草稿：列表被搜索/同步重画时能原样恢复
+      ta.addEventListener('input', () => {
+        this.state.editingDraft = { key, text: String(ta.value) };
+      });
       window.setTimeout(() => {
         ta.focus();
         ta.setSelectionRange(ta.value.length, ta.value.length);
@@ -1608,6 +1736,7 @@ class CardsView extends ItemView {
       const cancel = bar.createEl('button', { text: '取消', cls: 'qm-mini-btn' });
       cancel.onclick = () => {
         this.state.editingKey = null;
+        this.state.editingDraft = null;
         this.renderList();
       };
       const ok = bar.createEl('button', { text: '保存', cls: 'qm-mini-btn is-primary' });
@@ -1618,6 +1747,7 @@ class CardsView extends ItemView {
           return;
         }
         this.state.editingKey = null;
+        this.state.editingDraft = null;
         await this.plugin.updateCard(card, v);
       };
 
@@ -1628,6 +1758,7 @@ class CardsView extends ItemView {
         } else if (e.key === 'Escape') {
           e.preventDefault();
           this.state.editingKey = null;
+          this.state.editingDraft = null;
           this.renderList();
         }
       });
@@ -1692,6 +1823,7 @@ class CardsView extends ItemView {
     const edit = acts.createSpan({ cls: 'qm-act', text: '编辑' });
     edit.onclick = () => {
       this.state.editingKey = key;
+      this.state.editingDraft = null;
       this.renderList();
     };
 
@@ -1795,6 +1927,22 @@ class QuickMemoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('严格识别卡片（推荐开启）')
+      .setDesc(
+        '只把带块 ID（形如 ^abc123）的时间条目当成卡片。插件记录的卡片一定带块 ID；' +
+          '你在速记文件正文里手写的「- 12:30 开会」只是普通文字，不会出现在面板里，也不会被误删。' +
+          '关掉后，任何「- 时间 内容」的行都会被当成卡片。'
+      )
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.strictCardId !== false).onChange(async (v) => {
+          this.plugin.settings.strictCardId = v;
+          await this.plugin.saveSettings();
+          // 刚打开严格识别时，提醒一下有没有因此不显示的条目
+          if (v) this.plugin.checkUnmanagedEntries();
+        })
+      );
+
+    new Setting(containerEl)
       .setName('块引用使用嵌入形式')
       .setDesc(
         '关闭时「复制链接」给出 [[文件#^id]]，点一下跳到那条卡片；' +
@@ -1841,6 +1989,11 @@ class QuickMemoPlugin extends Plugin {
     // 文件被改动后顺手收走空的日期标题：不论是插件删的，
     // 还是你在 Obsidian 编辑器里手动删掉的卡片
     this.registerEvent(this.app.vault.on('modify', (f) => this.pruneSoon(f)));
+
+    // 工作区就绪后体检一次：有没有「没有块 ID」的时间条目（严格模式下它们不显示）
+    const check = () => this.checkUnmanagedEntries();
+    if (this.app.workspace.onLayoutReady) this.app.workspace.onLayoutReady(check);
+    else check();
   }
 
   onunload() {
@@ -1874,14 +2027,21 @@ class QuickMemoPlugin extends Plugin {
     if (typeof this.settings.blockRefEmbed !== 'boolean') {
       this.settings.blockRefEmbed = false;
     }
+    if (typeof this.settings.strictCardId !== 'boolean') {
+      this.settings.strictCardId = true;
+    }
 
     const folder = String(this.settings.folderPath || '').replace(/^\/+|\/+$/g, '');
     this.settings.folderPath = folder && folder !== '.' ? folder : DEFAULT_SETTINGS.folderPath;
   }
 
-  async saveSettings() {
+  /**
+   * 保存设置。reload=true 时让面板重读一遍文件（改文件夹这类必须重读）；
+   * 回收站的增删恢复只需要更新一下条数，用 reload=false 走轻量重绘，不读盘。
+   */
+  async saveSettings(reload = true) {
     await this.saveData(this.settings);
-    this.notifyViews();
+    this.notifyViews(reload ? null : { light: true });
   }
 
   /* ---------------- 路径 ---------------- */
@@ -1983,19 +2143,45 @@ class QuickMemoPlugin extends Plugin {
       .sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
+  isCardFilePath(path) {
+    const folder = this.folderPathSafe();
+    if (!folder) return false;
+    const p = String(path || '');
+    if (p.indexOf(folder + '/') !== 0) return false;
+    return MONTH_FILE_RE.test(p.split('/').pop() || '');
+  }
+
   async readAllCards() {
     const files = this.listCardFiles();
+    const opts = { strict: this.settings.strictCardId !== false };
+    // 各文件互不依赖，并行读；串行 N 个文件在月份多时白等
+    const chunks = await Promise.all(
+      files.map(async (f) => {
+        let content = '';
+        try {
+          content = await this.app.vault.cachedRead(f);
+        } catch (e) {
+          try {
+            content = await this.app.vault.read(f);
+          } catch (e2) {
+            content = '';
+          }
+        }
+        return content ? parseCards(content, f.path, opts) : [];
+      })
+    );
     const all = [];
-    for (const f of files) {
-      let content = '';
-      try {
-        content = await this.app.vault.cachedRead(f);
-      } catch (e) {
-        content = await this.app.vault.read(f);
-      }
-      all.push(...parseCards(content, f.path));
-    }
+    for (const c of chunks) all.push(...c);
     return sortCards(all);
+  }
+
+  /** 快速记录弹窗用：面板已加载就直接用内存里的，避免每次开弹窗都读盘 */
+  async cardsForSuggest() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_QM)) {
+      const v = leaf.view;
+      if (v && v._loadedOnce && v.state && Array.isArray(v.state.cards)) return v.state.cards;
+    }
+    return await this.readAllCards();
   }
 
   /* ---------------- 写入 ---------------- */
@@ -2007,11 +2193,21 @@ class QuickMemoPlugin extends Plugin {
       throw new Error('拒绝写入非卡片文件：' + path);
     }
     const file = await this.ensureFileAt(path);
+    let written = null;
     await this.app.vault.process(file, (data) => {
       const res = fn(String(data || ''));
-      return typeof res === 'string' ? res : data;
+      const next = typeof res === 'string' ? res : data;
+      if (next !== data) written = next;
+      return next;
     });
-    this.notifyViews();
+
+    // 写入后只更新这一个文件；modify 事件那遍由 isOwnWrite 认出来挡掉
+    if (written !== null) {
+      this.rememberWrite(path, written);
+      this.notifyViews({ path, content: written });
+    } else {
+      this.notifyViews({ light: true });
+    }
   }
 
   /**
@@ -2024,9 +2220,11 @@ class QuickMemoPlugin extends Plugin {
     if (!guard.ok) return guard;
 
     let out = { ok: false, reason: '文件已在别处修改，已刷新' };
+    let written = null;
+    const opts = { strict: this.settings.strictCardId !== false };
     await this.app.vault.process(file, (data) => {
       const content = String(data || '').replace(/\r\n?/g, '\n');
-      const hit = qmLocateCard(content, card);
+      const hit = qmLocateCard(content, card, opts);
       if (!hit) {
         out = { ok: false, reason: '这条卡片已经不在原位了' };
         return data;
@@ -2037,9 +2235,16 @@ class QuickMemoPlugin extends Plugin {
         return data;
       }
       out = { ok: true, hit };
+      if (res !== data) written = res;
       return res;
     });
-    this.notifyViews();
+
+    if (written !== null) {
+      this.rememberWrite(card.filePath, written);
+      this.notifyViews({ path: card.filePath, content: written });
+    } else {
+      this.notifyViews({ light: true });
+    }
     return out;
   }
 
@@ -2051,11 +2256,106 @@ class QuickMemoPlugin extends Plugin {
     return id;
   }
 
-  notifyViews() {
+  /**
+   * 通知面板更新。带 {path, content} 的只重解析这一个文件；
+   * {light:true} 只重画界面文字；什么都不带才是老老实实重读全部。
+   */
+  notifyViews(info) {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_QM)) {
       const v = leaf.view;
-      if (v && v.refresh) v.refresh();
+      if (!v) continue;
+      if (info && info.path && typeof v.applyFileCards === 'function') {
+        v.applyFileCards(info.path, info.content);
+      } else if (info && info.light && typeof v.rerender === 'function') {
+        v.rerender();
+      } else if (v.refresh) {
+        v.refresh();
+      }
     }
+  }
+
+  /* ---------------- 认出「这是我自己刚写的」 ---------------- */
+
+  rememberWrite(path, content) {
+    if (!this._ownWrites) this._ownWrites = new Map();
+    this._ownWrites.set(path, { content, at: Date.now() });
+    // 只留最近 8 个文件，避免无限增长
+    while (this._ownWrites.size > 8) {
+      const first = this._ownWrites.keys().next().value;
+      this._ownWrites.delete(first);
+    }
+  }
+
+  /**
+   * 刚写完触发的 modify 事件，如果磁盘内容和插件刚写的一字不差，
+   * 说明就是自己那次写入，不用再重读一遍。内容变了就当作外部改动。
+   */
+  async isOwnWrite(file) {
+    if (!this._ownWrites || !file) return false;
+    const rec = this._ownWrites.get(file.path);
+    if (!rec) return false;
+    if (Date.now() - rec.at > 3000) {
+      this._ownWrites.delete(file.path);
+      return false;
+    }
+    let data = '';
+    try {
+      data = await this.app.vault.cachedRead(file);
+    } catch (e) {
+      return false;
+    }
+    if (data === rec.content) return true;
+    this._ownWrites.delete(file.path);
+    return false;
+  }
+
+  /* ---------------- 无块 ID 条目的体检 ---------------- */
+
+  /**
+   * 严格识别开着时，没有块 ID 的时间条目不会显示成卡片。
+   * 这里只做一次提示（不改任何文件），防止旧卡片「悄悄消失」却不知道为什么。
+   */
+  async checkUnmanagedEntries() {
+    if (this.settings.strictCardId === false) return;
+
+    let total = 0;
+    for (const f of this.listCardFiles()) {
+      let content = '';
+      try {
+        content = await this.app.vault.cachedRead(f);
+      } catch (e) {
+        continue;
+      }
+      for (const c of parseCards(content, f.path, { strict: false })) {
+        if (!c.id) total++;
+      }
+    }
+
+    // 同一批条目只提醒一次，别每次启动都弹一遍
+    if (!total) {
+      if (this.settings.strictNoticeCount) {
+        this.settings.strictNoticeCount = 0;
+        try {
+          await this.saveData(this.settings);
+        } catch (e) {
+          /* 存不进去也不影响使用 */
+        }
+      }
+      return;
+    }
+    if (total === this.settings.strictNoticeCount) return;
+    this.settings.strictNoticeCount = total;
+    try {
+      await this.saveData(this.settings);
+    } catch (e) {
+      /* 存不进去也不影响使用 */
+    }
+
+    new Notice(
+      'Collis：有 ' + total + ' 条时间条目没有块 ID（^xxxx），不会显示成卡片。' +
+        '如果是以前的卡片，在行尾补一个 ^id 就能纳入；也可以在设置里关掉「严格识别卡片」。',
+      15000
+    );
   }
 
   /* ---------------- 空日期标题自动清理 ---------------- */
@@ -2114,6 +2414,8 @@ class QuickMemoPlugin extends Plugin {
     const target = this.app.vault.getAbstractFileByPath(file.path);
     if (!(target instanceof TFile)) return;
     if (!this.checkManagedFile(target).ok) return;
+    // 自己刚写完的那次不用再查：插件写入时已经顺手清过了
+    if (await this.isOwnWrite(target)) return;
 
     let content = '';
     try {
@@ -2126,18 +2428,21 @@ class QuickMemoPlugin extends Plugin {
     const skip = this.cursorDatesIn(target);
     if (!qmStripEmptyDateSections(content, skip).removed.length) return;
 
-    let changed = false;
+    let changed = null;
     try {
       await this.app.vault.process(target, (data) => {
         const res = qmStripEmptyDateSections(String(data || ''), skip);
         if (!res.removed.length) return data;
-        changed = true;
+        changed = res.text;
         return res.text;
       });
     } catch (e) {
       return;
     }
-    if (changed) this.notifyViews();
+    if (changed !== null) {
+      this.rememberWrite(target.path, changed);
+      this.notifyViews({ path: target.path, content: changed });
+    }
   }
 
   /* ---------------- 增 ---------------- */
@@ -2303,6 +2608,7 @@ class QuickMemoPlugin extends Plugin {
       byFile.get(p).push(c);
     }
 
+    const writes = [];
     for (const [path, group] of byFile) {
       const file = this.app.vault.getAbstractFileByPath(path);
       const guard = this.checkManagedFile(file, group[0].date);
@@ -2312,6 +2618,7 @@ class QuickMemoPlugin extends Plugin {
       }
 
       const removed = [];
+      const opts = { strict: this.settings.strictCardId !== false };
       try {
         await this.app.vault.process(file, (data) => {
           const text = String(data || '');
@@ -2319,7 +2626,7 @@ class QuickMemoPlugin extends Plugin {
           // 两条卡片若指向同一处（比如手工复制出重复块 ID），只删一次
           const used = new Set();
           for (const c of group) {
-            const hit = qmLocateCard(text, c);
+            const hit = qmLocateCard(text, c, opts);
             if (!hit || used.has(hit.lineIndex)) {
               failed.push(c);
               continue;
@@ -2347,6 +2654,10 @@ class QuickMemoPlugin extends Plugin {
           for (const d of new Set(removed.map((x) => x.date))) {
             out = qmPruneEmptyDateSections(out, d);
           }
+          if (out !== data) {
+            this.rememberWrite(path, out);
+            writes.push({ path, content: out });
+          }
           return out;
         });
       } catch (e) {
@@ -2358,7 +2669,12 @@ class QuickMemoPlugin extends Plugin {
     }
 
     if (saved.length) await this.pushTrashMany(saved);
-    this.notifyViews();
+
+    // 只动了一个文件就定向更新；跨月批量删（少见）才退回全量重读
+    if (writes.length === 1) this.notifyViews({ path: writes[0].path, content: writes[0].content });
+    else if (writes.length > 1) this.notifyViews();
+    else this.notifyViews({ light: true });
+
     return { deleted: saved.length, failed: failed.length };
   }
 
@@ -2377,7 +2693,7 @@ class QuickMemoPlugin extends Plugin {
     };
     this.settings.trash.unshift(entry);
     if (this.settings.trash.length > 50) this.settings.trash.length = 50;
-    await this.saveSettings();
+    await this.saveSettings(false);
     return entry;
   }
 
@@ -2406,12 +2722,12 @@ class QuickMemoPlugin extends Plugin {
     const i = this.settings.trash.findIndex((t) => t.uid === uid);
     if (i === -1) return;
     this.settings.trash.splice(i, 1);
-    await this.saveSettings();
+    await this.saveSettings(false);
   }
 
   async clearTrash() {
     this.settings.trash = [];
-    await this.saveSettings();
+    await this.saveSettings(false);
   }
 
   async restoreTrash(uid) {
@@ -2434,6 +2750,7 @@ class QuickMemoPlugin extends Plugin {
     }
 
     let done = false;
+    let written = null;
     await this.app.vault.process(file, (data) => {
       const content = String(data || '').replace(/\r\n?/g, '\n');
       const ids = qmCollectIds(content);
@@ -2443,18 +2760,23 @@ class QuickMemoPlugin extends Plugin {
         lines = qmFormatEntry(entry.time || '00:00', qmBodyLines(entry.body), '');
       }
 
-      // 拉出来的内容里已经有人占了同一个块 ID：换一个，避免链接指错
+      // 块 ID 处理：冲突就换一个；旧记录里压根没有 ID 的，补一个，
+      // 否则「严格识别」开着时恢复出来的卡片会看不见
       const last = lines.length - 1;
       const m = String(lines[last] || '').match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/);
-      if (m && ids.has(m[1])) {
+      const needId = !m || ids.has(m[1]);
+      if (needId) {
         let nid = genId();
         let guardN = 0;
         while (ids.has(nid) && guardN++ < 50) nid = genId();
-        lines[last] = lines[last].replace(/[ \t]\^[A-Za-z0-9-]+[ \t]*$/, '') + ' ^' + nid;
+        const bare = String(lines[last] || '').replace(/[ \t]\^[A-Za-z0-9-]+[ \t]*$/, '');
+        lines[last] = bare.replace(/[ \t]+$/, '') + ' ^' + nid;
       }
 
       done = true;
-      return qmInsertRestoredCard(content, entry.date, entry.time, lines);
+      const out = qmInsertRestoredCard(content, entry.date, entry.time, lines);
+      if (out !== data) written = out;
+      return out;
     });
 
     if (!done) {
@@ -2463,7 +2785,11 @@ class QuickMemoPlugin extends Plugin {
     }
 
     this.settings.trash.splice(i, 1);
-    await this.saveSettings();
+    await this.saveSettings(false);
+    if (written !== null) {
+      this.rememberWrite(entry.filePath, written);
+      this.notifyViews({ path: entry.filePath, content: written });
+    }
     new Notice('已恢复');
   }
 
