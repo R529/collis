@@ -1,168 +1,90 @@
 # Collis
 
-English · [中文文档](#中文文档)
+**Obsidian 速记卡片：不用建文件，`Ctrl+Enter` 记一张，纯 Markdown 存在你自己的库里。**
 
-Collis is a lightweight card-note plugin for Obsidian. Jot down a thought without creating a file, naming it, or picking a folder — press `Ctrl+Enter` and it is saved. Need a line break mid-thought? Press `Enter`; the layout is kept exactly as you wrote it.
+中文 · [English](#collis-quick-cards-for-obsidian)
 
-Everything is stored as plain Markdown inside your own vault. No database, no proprietary format, no account.
+![Collis 侧边栏](assets/hero.png)
 
-## Features
+*侧边栏输入框常驻；`Ctrl+Enter` 存下后成为一张带时间的卡片，右上角显示被几篇笔记引用。*
 
-- **Quick capture** — a sidebar input box, or `Ctrl+Shift+K` for a floating capture window. `Enter` for a new line, `Ctrl+Enter` to save.
-- **Multi-line cards** — continuation lines are stored as indented lines with Markdown hard breaks, so both the card view and reading view keep your original line breaks.
-- **Tag autocomplete** — type `#` and pick from tags that already exist in your cards.
-- **Nested tags** — `#parent/child` is supported; the tag bar groups children under their parent, and clicking the parent filters the whole group.
-- **Search across everything** — the search box covers every monthly file, not just the current month. Type `#tag`, `2026-11`, `11-07`, `13:41` or `"a whole phrase"` to filter by that dimension; space-separated words must all match.
-- **Edit, delete, undo** — inline editing with `Ctrl+Enter` to save and `Esc` to cancel; single or batch delete, a 9-second undo notice, and a "recently deleted" list holding the last 50 cards.
-- **Copy card text or block reference** — copy the plain text of a card, or `![[2026-11#^a1b2c3]]` to embed it elsewhere.
-- **Reference count** — each card shows how many notes actually link to it through `[[file#^id]]` or `![[file#^id]]`; several links from the same note count once, and links between cards of the same capture file are ignored. Click the number to filter the referenced cards, or use the "Refs" button to cycle all → referenced → unreferenced. Deleting a card that is referenced elsewhere warns you first.
-- **Clickable URLs** — bare `https://…` links in card text open in your browser. `[[wikilinks]]` and Markdown syntax stay plain text on purpose.
-- **Draft recovery** — close the window mid-sentence and the text is kept locally, then restored next time you open it (kept for 7 days).
-- **Monthly archive** — one file per month, so a single file never grows without bound.
+## 它是什么
 
-## Installation
+Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也可以按 `Ctrl+Shift+K` 在任何页面唤出悬浮输入框；写完按 `Ctrl+Enter`，内容作为一张带时间的卡片写进当月的 Markdown 文件。
 
-### From the community plugin store
+记录一张卡片不需要新建文件、不需要起标题、不需要选文件夹，也不打标签就能先存下来。
 
-1. Open **Settings → Community plugins → Browse**.
-2. Search for **Collis**.
-3. Click **Install**, then **Enable**.
+卡片是标准的 Markdown 列表项，存在库内文件夹（默认 `00-Inbox/速记/`），每月一个 `YYYY-MM.md`。插件离线运行、不联网、不采集数据；停用或卸载插件后，笔记原样保留。
 
-### Manual installation
+## 核心特点
 
-1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/R529/collis/releases).
-2. Put them in `<your vault>/.obsidian/plugins/collis/`.
-   The folder name must be `collis`, matching the plugin ID.
-3. Reload Obsidian, then enable **Collis** under **Settings → Community plugins**.
-
-### With BRAT
-
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat).
-2. Run `BRAT: Add a beta plugin for testing`.
-3. Enter `R529/collis` and enable the plugin.
-
-## Usage
-
-- Click the **Collis** ribbon icon to open the card view, or press `Ctrl+Shift+K` for the quick capture window.
-- Type your note. `Enter` inserts a new line, `Ctrl+Enter` saves it under today's date.
-- Add tags inline with `#tag`; start typing `#` and pick from the suggestions.
-- Cards are written to `00-Inbox/速记/` as `YYYY-MM.md` by default. The folder is configurable in settings.
-
-### Data format
-
-```markdown
-## 2026-11-06
-
-- 09:15 Meeting notes: confirm next Wednesday's release plan #work ^a1b2c3
-- 14:30 Buy milk and coffee beans #life ^d4e5f6
-- 16:51 First line  
-  Second line #example ^e7g8h9
-```
-
-- `- HH:mm text` is the first line of a card; continuation lines are indented by two spaces, ending with two spaces for a Markdown hard break.
-- `^a1b2c3` is an Obsidian block ID, kept on the last line of the card so it can be linked and embedded.
-- Cards are ordinary Markdown list items. Uninstall the plugin and your notes are untouched.
-
-### Strict card detection
-
-Since 1.7.0, only entries that carry a block ID are treated as cards. A line you type by hand in the editor — `- 12:30 standup` — stays plain text, so it never shows up in the card list and can never be deleted by mistake. To make such a line a card, append `^` plus a few letters. This rule can be turned off in settings.
-
-## Compatibility
-
-- Obsidian 1.4.0 or newer; works on desktop and mobile.
-- Older single-line card formats are fully compatible — no migration needed.
-- Cards live in standard `YYYY-MM.md` files and can be opened by any editor.
-
-## Privacy
-
-The plugin runs entirely offline. It makes no network requests, collects no data, and needs no account. Unfinished drafts are kept only in the plugin's own data file, never written into your notes.
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
-
----
-
-## 中文文档
-
-Collis 是一个为 Obsidian 打造的轻量卡片笔记插件。随手即记，数据完全存在你自己的 Markdown 文件里。
-
-不需要新建文件、不需要命名、不需要选文件夹——写完按 `Ctrl+Enter`，就存好了。写到一半想换行？直接按 `Enter`，保存后排版原样保留。
-
-## 为什么做这个插件
-
-Obsidian 原生的记录方式是「一条笔记 = 一个文件」。想记一句话，也要先建文件、起标题、选目录。次数多了，记录这件事本身就变成了负担。
-
-这个插件把记录的粒度从「文件」降到「一张卡片」：
-
-- 一条卡片就是 Markdown 里的一个列表项，可以是一行，也可以是多行
-- 所有卡片按月存在 `YYYY-MM.md` 里
-- 不想要这个插件了，直接删掉插件文件夹即可，笔记原样保留
-
-## 功能
-
-| 功能 | 说明 |
+| 特点 | 具体是什么 |
 | --- | --- |
-| 快速记录 | 侧边栏输入框，`Enter` 换行、`Ctrl+Enter` 保存，自动写入当天日期下 |
-| 手稿不丢 | 写到一半关掉窗口、切走、或者保存失败，内容都留着；下次打开自动填回，停留 7 天 |
-| 多行排版 | 换行写成缩进续行 + Markdown 硬换行；卡片视图和阅读视图都保留记录时的分行，旧的单行卡片格式不变 |
-| 标签联想 | 输入 `#` 自动弹出已有标签，按使用频率排序；`Tab` 或 ↑↓ + `Enter` 确认、`Esc` 关闭；直接按 `Enter` 优先换行，不抢输入 |
-| 父子标签 | 支持 `#父/子` 嵌套标签，标签栏自动把子标签聚合到父标签下，点击父标签一次即筛选整组 |
-| 折叠标签栏 | 默认只显示前几个标签组，尾部「更多 / 收起」，不会把列表挤小 |
-| 无标签筛选 | 一键筛出还没打标签的卡片，方便回头补标签 |
-| 全量搜索 | 搜索框覆盖所有月份文件，不只是当月；空格分词，多个词需同时命中 |
-| 智能搜索 | 直接输入 `#标签`、`2026-11`、`11-07`、`13:41` 或 `"整句短语"`，按对应维度筛选 |
-| 标签筛选 | 点任意标签，筛出同标签的全部卡片，带数量统计 |
-| 日期折叠 | 点击日期标题即可折叠当天卡片，折叠状态会被记住 |
-| 内联编辑 | 点「编辑」原地修改，多行内容按行数自动展开，`Ctrl+Enter` 保存，`Esc` 取消 |
-| 删除 | 二次确认后删除整张卡片（含所有续行）；当天卡片删空后，空的 `## 日期` 标题一并清理 |
-| 批量删除 | 进入选择模式后勾选多条，一次删除，跨月份的会分别处理 |
-| 撤销与最近删除 | 删除后提示条可点撤销；底部「最近删除」保留最近 50 条，可逐条恢复或清空 |
-| 复制全文 | 一键复制卡片正文全部内容（含换行、标签），粘贴到任何笔记里直接就是文字，不依赖块 ID |
-| 复制块引用 | 一键复制 `![[2026-11#^a1b2c3]]`，块 ID 自动保持在 Obsidian 可识别的位置，方便回链与嵌入 |
-| 被引用次数 | 卡片右上角显示「被 N」——只统计仓库里真实的 `[[文件#^id]]` / `![[文件#^id]]`，同一篇笔记引多次只算一篇，速记内部互引不算；点数字直接筛出已引用的卡片，「引用」按钮在 全部 → 已引用 → 未引用 之间循环；删除被引用的卡片前会提示有多少篇笔记引用了它 |
-| 网址可点 | 正文里的 `https://…` 点了直接开浏览器，长网址在原位折行 |
-| 按月归档 | 每月一个文件，避免单文件无限膨胀 |
+| **低摩擦记录** | 侧边栏常驻输入框，`Ctrl+Shift+K` 全局唤出，两个键存下一张卡片 |
+| **多行原样保留** | 换行写成缩进续行 + 硬换行，卡片视图与阅读视图都保持原分行 |
+| **本地纯 Markdown** | 按月一个文件，无私有格式、无自带云同步，卸载插件内容不动 |
+| **全库检索** | 跨所有月份，按标签、日期、时间、短语、关键词筛选且可叠加 |
+| **卡片可用于写作** | 一键复制 `![[文件#^id]]` 嵌入笔记，卡片修改后嵌入处同步 |
+| **被引用次数** | 显示被几篇笔记引用，可筛出已引用/未引用，删除前提示 |
+| **误删可恢复** | 二次确认、9 秒撤销、最近删除 50 条；手写时间行不会被当成卡片 |
 
-## 安装
+## 功能明细
 
-### 方式一：手动安装（推荐）
+### 记录
 
-1. 下载本仓库的 `main.js`、`manifest.json`、`styles.css` 三个文件
-   - 或从 [Releases](https://github.com/R529/collis/releases) 页面下载最新版本
-2. 在你的 Obsidian 库中，进入 `.obsidian/plugins/` 目录
-3. 新建文件夹 `collis`
-   > 文件夹名对应插件 ID `collis`，请勿改名，否则 Obsidian 无法识别插件。
-4. 把三个文件放进这个文件夹
-5. 重启 Obsidian
-6. 设置 → 第三方插件 → 找到「Collis」→ 打开开关
+- **侧边栏输入框**：常驻在卡片视图顶部，输入框随内容自动长高（最高 200px 后内部滚动）
+- **悬浮输入框**：`Ctrl+Shift+K` 在任何页面唤出，`Esc` 关闭，不打断当前正在读或写的笔记
+- **两个键完成记录**：`Enter` 换行，`Ctrl+Enter` 保存，内容落在当天日期下
+- **快捷键可改**：`Ctrl+Shift+K` 只是默认值，在 设置 → 快捷键 里搜索「快速记一条」即可更换；即使改了，命令面板里也仍能调用
+- **草稿不丢**：关掉窗口、切走、保存失败，内容保留在插件数据文件里，下次打开自动填回，保留 7 天；开始编辑后提示自动收起
+- **标签联想**：输入 `#` 弹出库内已有标签，按使用频率排序；`Tab` 或 ↑↓ + `Enter` 选中，直接按 `Enter` 仍是换行，不影响正常输入
+- **常用标签快选**：悬浮窗口中可直接点常用标签填入
 
-如果你的库里看不到 `.obsidian` 文件夹，需要在系统里开启「显示隐藏文件」。
+### 标签
 
-### 方式二：BRAT（可自动更新）
+- `#标签` 是 Obsidian 原生标签，标签面板、全局搜索、`tag:` 查询本来就能用
+- `#父/子` 嵌套标签：标签栏把子标签聚合到父标签下，点父标签一次筛出整组
+- 标签栏每个标签带卡片数量，「无标签」一键筛出还没打标签的卡片
+- 标签栏可折叠，默认只显示前几组，尾部「更多 / 收起」，不挤压列表空间
 
-1. 安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 插件
-2. 命令面板执行 `BRAT: Add a beta plugin for testing`
-3. 输入 `R529/collis`
-4. 启用「Collis」
+### 搜索与筛选
 
-## 使用
+不用回忆内容存放在哪，输入记得的部分即可：
 
-### 打开卡片视图
+| 你记得 | 就输入 |
+| --- | --- |
+| 标签 | `#工作` |
+| 哪一天 | `11-07`、`2026-11` |
+| 几点写的 | `13:41` |
+| 一句话 | `"整句短语"` |
+| 几个词 | 空格分开，须同时命中 |
 
-- 点击左侧边栏的「Collis」图标
-- 或按 `Ctrl+P` 搜索「打开卡片视图」
-- 或按 `Ctrl+Shift+K` 直接唤出快速记录弹窗
+- 搜索覆盖**所有月份文件**，不只当月
+- 关键词、标签、日期、引用状态可叠加，叠加条件会在搜索框下方明示
+- 日期标题可折叠，折叠状态记在设置里，重启后保留
+- 「引用」按钮在 全部 → 已引用 → 未引用 之间循环，配合被引用次数使用
 
-### 记录一下
+### 编辑与删除
 
-在视图顶部输入框写内容，`Enter` 换行，`Ctrl+Enter` 保存。输入框会随内容自动长高。
+- **内联编辑**：点「编辑」原地改，多行内容按行数自动展开，`Ctrl+Enter` 保存、`Esc` 取消
+- **删除**：二次确认后删除整张卡片（含所有续行）；被引用的卡片会先提示被几篇笔记引用
+- **批量删除**：进入选择模式勾选多条，跨月份的一次处理完
+- **撤销**：删除后 9 秒内可点提示条撤销；「最近删除」保留最近 50 条，可逐条恢复或清空
+- **空标题清理**：某天卡片删空后，`## 日期` 标题一并移除；在编辑器里手删同样生效，光标所在日期段暂不处理
+- **严格识别卡片**：默认开启，只有带块 ID（`^abc123`）的条目才算卡片。正文里手写的 `- 12:30 开会` 只是普通文字，不会出现在列表里，也不会被删
 
-想加标签就直接写 `#标签`，输入 `#` 时会弹出已有标签供选择，不用记全名，也不会重复造标签。候选弹出时按 `Enter` 仍然换行，要选标签请用 `Tab`，或先用 ↑↓ 选中再按 `Enter`。
+### 复制与引用
 
-### 数据存在哪
+![把卡片嵌入笔记](assets/flow.png)
 
-默认存放在 `00-Inbox/速记/`，每月一个文件：
+*复制链接得到 `![[2026-11#^a1b2c3]]`，粘进笔记即嵌入；原卡片修改后，嵌入处同步更新。*
+
+- **复制全文**：卡片正文连换行、标签一并复制为纯文本，粘贴即见内容；不依赖块 ID，原卡片以后删掉，粘出去的文字也还在
+- **复制链接**：默认 `[[2026-11#^a1b2c3]]`（点击跳转），可在设置里改为 `![[2026-11#^a1b2c3]]`（直接嵌入）；卡片没有块 ID 时会自动补上
+- **被引用次数**：数字来自仓库里真实的 `[[文件#^id]]` / `![[文件#^id]]` 链接；同一篇笔记引多次只算一篇，速记内部卡片互引不算，0 次不显示
+- **网址可点**：正文里的 `https://…` 点击直接用浏览器打开，长网址原位折行；`[[双链]]` 与 Markdown 语法不做解析，卡片内始终是纯文本
+
+## 数据格式
 
 ```markdown
 ## 2026-11-06
@@ -173,51 +95,119 @@ Obsidian 原生的记录方式是「一条笔记 = 一个文件」。想记一�
   第二行内容 #示例 ^e7g8h9
 ```
 
-- `- HH:mm 正文` 是卡片首行
-- 换行写成缩进两空格的续行，行尾两个空格是 Markdown 硬换行（阅读视图里也分行）
-- `#标签` 是 Obsidian 原生标签，全局搜索、标签面板都能识别
-- `#父/子` 是嵌套标签，Obsidian 原生支持
-- `^a1b2c3` 是块 ID，固定在卡片最后一行，让这张卡片可以被双链和嵌入
+- `- HH:mm 正文` 是卡片首行；换行写成缩进两空格的续行，行尾两个空格是 Markdown 硬换行
+- `^a1b2c3` 是块 ID，固定在 Obsidian 认得的末行，让这张卡片可被双链和嵌入；它同时也是插件区分「卡片」和「手写时间行」的依据
+- `#标签`、`#父/子` 都是原生标签
+- 每月一个文件，避免单文件无限膨胀；停用插件、换编辑器、迁移库都不受影响
 
-块 ID 同时也是插件区分「卡片」和「你随手写的时间行」的唯一依据。所以直接在正文里敲 `- 12:30 开会` 不会变成卡片；想让某一行成为卡片，在行尾补一个 `^` 加几个字母就行。这条规则可以在设置里关掉。
+## 不适用的场景
 
-卡片正文在文件里永远是纯文本，插件只在显示上做两件事：`#标签` 高亮、`https://…` 变成可点。双链 `[[…]]`、`[文字](网址)`、加粗、代码块这些都不会被解析——它们该在 Obsidian 的编辑器和阅读视图里用。
+- 不联网：没有自己的云同步，多端同步请用你已有的文件同步方案
+- 不做富文本编辑：卡片内部是纯文本，Markdown 和双链不在卡片里渲染
+- 不替代长文编辑：卡片用于碎片记录，成文仍应写在笔记里
 
-### 把卡片用进文章里
+## 安装
 
-卡片右下角有两个复制操作：
-
-- **复制全文**（默认）：把卡片正文原样放进剪贴板，粘贴到任何 md 文件里直接显示内容，换行也保留。不依赖块 ID，即使原卡片后来被删掉，粘出去的文字也还在。
-- **复制块引用**：得到 `![[2026-11#^a1b2c3]]`，粘贴后嵌入显示这张卡片，与原处实时同步。前面加 `!` 是嵌入，去掉 `!` 是链接。插件会自动把块 ID 放在 Obsidian 认得的卡片末行，历史卡片的 ID 位置也会自动修正。
+- **插件市场**：设置 → 第三方插件 → 浏览 → 搜索 **Collis** → 安装 → 启用
+- **手动**：从 [最新 Release](https://github.com/R529/collis/releases) 下载 `main.js`、`manifest.json`、`styles.css`，放进 `<你的库>/.obsidian/plugins/collis/`（文件夹必须叫 `collis`），重启 Obsidian 后启用
+- **BRAT**：命令面板执行 `BRAT: Add a beta plugin for testing`，输入 `R529/collis`
 
 ## 设置项
 
 | 设置 | 说明 |
 | --- | --- |
 | 卡片文件夹 | 卡片存放位置，默认 `00-Inbox/速记`，不存在会自动创建 |
-| 常用标签 | 逗号分隔，仅用于把常用标签排在候选前面；卡片里不存在的标签不会出现 |
-| 最多渲染条数 | 仅影响列表渲染性能，不影响搜索范围 |
-| 自动清理空日期标题 | 默认开启。某天卡片全部删空后，连 `## 日期` 一起收走；在编辑器里手删同样生效，光标所在的日期段暂时不动 |
-| 严格识别卡片 | 默认开启。只把带块 ID（`^abc123`）的时间条目当成卡片，正文里手写的 `- 12:30 开会` 只是普通文字 |
-| 块引用使用嵌入形式 | 关闭时复制 `[[文件#^id]]`（点击跳转），打开后复制 `![[文件#^id]]`（直接展开内容） |
+| 常用标签 | 逗号分隔，只影响候选排序；卡片里不存在的标签不会出现 |
+| 最多渲染条数 | 只影响列表渲染性能，不影响搜索范围 |
+| 自动清理空日期标题 | 默认开启。编辑器里手删同样生效，光标所在日期段暂时不动 |
+| 严格识别卡片 | 默认开启。只有带块 ID 的条目才算卡片 |
+| 块引用使用嵌入形式 | 关闭时复制 `[[文件#^id]]`（点击跳转），打开后复制 `![[文件#^id]]`（直接展开） |
 
-## 兼容性
+## 兼容性与隐私
 
-- Obsidian 1.4.0 及以上
-- 桌面端与移动端均可使用
-- 旧版单行卡片格式完全兼容，升级后无需迁移
-- 1.7.0 起默认只识别带块 ID 的条目；如库里有早期没写块 ID 的卡片，打开插件时会提示条数，在行尾补 `^id` 即可，或先在设置里关掉「严格识别卡片」
-- 卡片就是标准 Markdown 列表项，按月存成 `YYYY-MM.md`，任何编辑器都能直接打开
-- 不依赖私有格式或外部服务，停用插件后笔记原样保留，随时可以迁移
+Obsidian 1.4.0 及以上，桌面端与移动端均可使用；旧版单行卡片格式完全兼容，升级无需迁移。插件完全离线运行，不联网、不采集数据、不需要账号，除插件自己的文件夹和数据文件外不写入任何位置。
 
-## 隐私
+MIT License，详见 [LICENSE](./LICENSE)。问题与建议：[GitHub Issues](https://github.com/R529/collis/issues)。
 
-插件完全在本地运行，不联网、不采集数据、不需要账号。没写完的手稿只存在插件自己的配置文件里，不会写进任何笔记。
+---
 
-## 许可
+## Collis: quick cards for Obsidian
 
-MIT License，详见 [LICENSE](./LICENSE)。
+*[中文文档在上面](#collis)*
 
-## 反馈
+**Jot a card with `Ctrl+Enter` — no file, no title, no folder. Plain Markdown, stored in your own vault.**
 
-有问题或建议，欢迎提 [Issue](https://github.com/R529/collis/issues)。
+### What it is
+
+Collis is a quick-capture card plugin for Obsidian. A permanent input sits in the sidebar; `Ctrl+Shift+K` opens a floating input from any page. `Ctrl+Enter` saves what you typed as a timestamped card in this month's Markdown file. No new file, no title, no folder, and no tag required.
+
+Cards are ordinary Markdown list items stored in a folder you choose (default `00-Inbox/速记`), one `YYYY-MM.md` per month. The plugin runs fully offline and writes nothing outside your vault.
+
+### Highlights
+
+| Highlight | What it is |
+| --- | --- |
+| **Low-friction capture** | Permanent sidebar input, `Ctrl+Shift+K` from anywhere, `Enter` for a new line, `Ctrl+Enter` to save |
+| **Multi-line kept intact** | Continuation lines are stored as indented lines with hard breaks, preserved in the card view and the reading view |
+| **Plain Markdown, no lock-in** | One file per month, no private format, no own sync; any editor can open it, removing the plugin leaves your notes untouched |
+| **Search across everything** | Every monthly file, filterable by tag, date, time, phrase or keyword, combinable |
+| **Cards usable in writing** | Copy `![[2026-11#^a1b2c3]]` into any note; edit the card and the embed follows |
+| **Citation count** | Each card shows how many notes link to it; filter to cited or uncited cards; warned before deleting a cited one |
+| **Deletion is reversible** | Confirmation, 9-second undo, last 50 deletions kept; only entries with a block ID count as cards |
+
+### Capture
+
+Permanent sidebar input that grows with the text (scrolls past 200px). `Ctrl+Shift+K` opens a floating input on any page, `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
+
+Type `#` for autocomplete over tags already in your vault, ordered by how often you use them; `Tab` or ↑↓ + `Enter` selects, a plain `Enter` still makes a new line.
+
+### Tags
+
+Native `#tag` and nested `#parent/child`, children grouped under their parent. Tag bar shows counts, has an "untagged" filter, and collapses to save space.
+
+### Find
+
+| You remember | You type |
+| --- | --- |
+| a tag | `#work` |
+| a day | `11-07`, `2026-11` |
+| a time | `13:41` |
+| a sentence | `"a whole phrase"` |
+
+Space-separated words must all match. Days collapse, and the collapsed state persists. The "Refs" button cycles all → cited → uncited.
+
+### Edit and delete
+
+Inline editing (`Ctrl+Enter` saves, `Esc` cancels), batch delete across months, 9-second undo, last 50 deletions kept, empty `## date` headings cleaned up automatically. Strict card detection means a hand-typed `- 12:30 standup` is never treated as a card.
+
+### Copy and cite
+
+Copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). Citation counts come from real links in your vault; several links from one note count once, and links between cards of the same file are ignored. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
+
+### Data
+
+```markdown
+## 2026-11-06
+
+- 09:15 Meeting notes: confirm next Wednesday's release plan #work ^a1b2c3
+- 14:30 Buy milk and coffee beans #life ^d4e5f6
+```
+
+`^a1b2c3` is an Obsidian block ID kept on the card's last line. One file per month keeps any single file from growing without bound.
+
+### Install
+
+Settings → Community plugins → Browse → **Collis** → Install → Enable. Manual: drop the three release files into `<vault>/.obsidian/plugins/collis/`. BRAT: `R529/collis`.
+
+### Settings
+
+| Setting | What it does |
+| --- | --- |
+| Card folder | Defaults to `00-Inbox/速记`, created if missing |
+| Common tags | Affects suggestion order only |
+| Max cards rendered | Rendering limit only; search still covers everything |
+| Clean up empty date headings | On by default, including manual deletions |
+| Strict card detection | On by default; only entries with a block ID count |
+| Block reference style | Off: `[[file#^id]]`. On: `![[file#^id]]` |
+
+Requires Obsidian 1.4.0+, desktop and mobile, fully offline, MIT licensed.
