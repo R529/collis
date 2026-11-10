@@ -133,6 +133,49 @@ function qmInsertCardLines(content, date, entryLines) {
 }
 
 /**
+ * 清理空日期段：某个 `## YYYY-MM-DD` 下面除了空行什么都没有时，连标题一起删掉。
+ * 只在删卡片后调用，且只处理这一天（onlyDate），不会动用户手写的其他段落。
+ * 段内有任何非空内容（哪怕不是卡片）就原样保留，避免误删备注。
+ */
+function qmPruneEmptyDateSections(content, onlyDate) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+  const headerRe = /^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/;
+  const out = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const hm = lines[i].match(headerRe);
+    if (!hm) {
+      out.push(lines[i]);
+      continue;
+    }
+
+    // 向下扫到下一个日期标题或文件末尾，判断这段是否已经空了
+    let j = i + 1;
+    let hasContent = false;
+    while (j < lines.length && !headerRe.test(lines[j])) {
+      if (lines[j].trim()) {
+        hasContent = true;
+        break;
+      }
+      j++;
+    }
+
+    if (hasContent || (onlyDate && hm[1] !== onlyDate)) {
+      out.push(lines[i]);
+      continue;
+    }
+
+    // 整段只剩空行：跳过标题与这些空行，并合并多出来的空白
+    i = j - 1;
+    while (out.length && !out[out.length - 1].trim()) out.pop();
+    if (out.length) out.push('');
+  }
+
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.length ? out.join('\n') + '\n' : '';
+}
+
+/**
  * 卡片正文 -> 可直接粘贴进 md 的纯文本。
  * 多行时给非空行补两个尾随空格（Markdown 硬换行），阅读视图也能保留排版；
  * 单行卡片原样返回，不添任何多余字符。
@@ -1447,7 +1490,8 @@ class QuickMemoPlugin extends Plugin {
       const end = qmCardBlockEnd(lines, start);
       lines.splice(start, end - start + 1);
       removed = true;
-      return lines.join('\n');
+      // 这一天的最后一条被删掉后，日期标题也一起收走
+      return qmPruneEmptyDateSections(lines.join('\n'), card.date);
     });
 
     new Notice(removed ? '已删除' : '没有找到这条卡片');
