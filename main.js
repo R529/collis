@@ -2469,8 +2469,9 @@ class QuickMemoPlugin extends Plugin {
       id: 'quick-capture',
       name: '快速记一条',
       // 'Mod' 由 Obsidian 按平台解析：macOS 是 Cmd，Windows/Linux 是 Ctrl。
-      // 写死 'Ctrl' 的话 Mac 用户按 Cmd+Shift+K 无效，物理 Ctrl 键又不在常用位置。
-      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'K' }],
+      // 用 J 而不是 K：Mod+K 是核心命令「插入 Markdown 链接」的默认键，
+      // 在编辑器里会同时插入 []() 并弹出速记窗，属于硬冲突。
+      hotkeys: [{ modifiers: ['Mod'], key: 'J' }],
       callback: () => new CaptureModal(this.app, this).open(),
     });
 
