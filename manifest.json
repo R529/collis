@@ -1,9 +1,9 @@
 {
   "id": "collis",
   "name": "Collis",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "minAppVersion": "1.4.0",
-  "description": "Obsidian 速记卡片：Ctrl+Enter 记一张，不建文件、多行排版原样保留，按月存进本地 Markdown。Quick cards for Obsidian: one keystroke to capture, plain Markdown in your own vault.",
+  "description": "在知识库里速记：不建文件、不起标题，Ctrl+Enter 记一张，多行排版原样保留，按月存进本地 Markdown。Quick capture inside your vault: one keystroke to save a card, plain Markdown stored locally.",
   "author": "Lak",
   "isDesktopOnly": false
 }
