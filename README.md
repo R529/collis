@@ -21,11 +21,13 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 | 特点 | 具体是什么 |
 | --- | --- |
 | **低摩擦记录** | 侧边栏常驻输入框，`Ctrl/Cmd+J` 全局唤出，两个键存下一张卡片 |
+| **选中即存** | 任意笔记里选中一段，`Ctrl/Cmd+Shift+C` 或右键「存为卡片」，只存文字、不写来源链接 |
 | **多行原样保留** | 换行写成缩进续行 + 硬换行，卡片视图与阅读视图都保持原分行 |
 | **本地纯 Markdown** | 按月一个文件，无私有格式、无自带云同步，卸载插件内容不动 |
 | **全库检索** | 跨所有月份，按标签、日期、时间、短语、关键词筛选且可叠加 |
+| **写的时候随时调用** | `Ctrl/Cmd+Shift+K` 打开卡片面板，搜关键词、`#标签`、日期；`Enter` 插引用，`Shift+Enter` 插原话 |
 | **卡片可用于写作** | 卡片拖进笔记即成引用，也可从菜单复制 `![[文件#^id]]`；卡片改动，引用处同步 |
-| **被引用看得见** | 被引用时右上角红点提示，菜单里写明被几篇笔记引用，并能直接跳到引用它的笔记 |
+| **被引用看得见** | 被引用时右上角红点提示；菜单里一行「被 N 篇笔记引用…」，点开列出全部引用，任选一条跳到引用位置 |
 | **误删可恢复** | 二次确认、9 秒撤销、最近删除 50 条；手写时间行不会被当成卡片 |
 
 ## 功能明细
@@ -35,7 +37,8 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 - **侧边栏输入框**：常驻在卡片视图顶部，输入框随内容自动长高（最高 200px 后内部滚动）
 - **悬浮输入框**：`Ctrl/Cmd+J` 在任何页面唤出，`Esc` 关闭，不打断当前正在读或写的笔记
 - **两个键完成记录**：`Enter` 换行，`Ctrl+Enter` 保存，内容落在当天日期下
-- **快捷键可改**：`Ctrl/Cmd+J` 只是默认值（macOS 上是 `Cmd+J`，由 Obsidian 按系统解析），在 设置 → 快捷键 里搜索「快速记一条」即可更换；即使改了，命令面板里也仍能调用
+- **选中即存**：在任意笔记里选中一段文字，`Ctrl/Cmd+Shift+C` 或右键菜单「存为卡片」，直接存成一张卡片，接着往下读就行。只存文字、**不带来源链接**——原文以后删了也不会留下死链；超过 300 字照存但会提示「偏长」。提示条 8 秒内可点撤销；手机上从工具栏调用同样有效（读最近一次选区）
+- **快捷键可改**：`Ctrl/Cmd+J` 只是默认值（macOS 上是 `Cmd+J`，由 Obsidian 按系统解析），在 设置 → 快捷键 里搜索「快速记一条」「把选中的内容存为卡片」「插入卡片」即可更换；即使改了，命令面板里也仍能调用
 - **草稿不丢**：关掉窗口、切走、保存失败，内容保留在插件数据文件里，下次打开自动填回，保留 7 天；开始编辑后提示自动收起
 - **标签联想**：输入 `#` 弹出库内已有标签，按使用频率排序；`Tab` 或 ↑↓ + `Enter` 选中，直接按 `Enter` 仍是换行，不影响正常输入
 - **常用标签快选**：悬浮窗口中可直接点常用标签填入
@@ -84,7 +87,8 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 - **拖进笔记即引用**：按住卡片任意位置（不用找把手）拖到正在写的笔记里松手，落下的就是引用（与「复制链接」同一串），原卡片不受影响
 - **复制全文**：卡片正文连换行、标签一并复制为纯文本，粘贴即见内容；不依赖块 ID，原卡片以后删掉，粘出去的文字也还在
 - **复制链接**：默认 `[[2026-11#^a1b2c3]]`（点击跳转），可在设置里改为 `![[2026-11#^a1b2c3]]`（直接嵌入）；卡片没有块 ID 时会自动补上
-- **被引用提示**：右上角小红点表示这张卡片被其他笔记引用过；「···」菜单里写明被几篇笔记引用，点一下跳到第一篇引用它的笔记
+- **被引用提示**：右上角小红点表示这张卡片被其他笔记引用过；「···」菜单里一行「被 N 篇笔记引用…」，点开是独立面板：每篇笔记的名字、所在文件夹、引用几处，点任意一条直接跳到**引用所在的那一行**；同名笔记会补上父目录标出来
+- **写的时候调卡片**：`Ctrl/Cmd+Shift+K` 打开面板（和「快速切换」同一套壳），一行一张卡；没输入时列最近的卡片，输入后按关键词、`#标签`、`2026-11`、`"整句短语"` 筛选，字面不中时按字的重合度兜一层（搜「写作」也能找到含「写字」的卡），命中的字会标出来。`Enter` 插入 `[[文件#^id]]`，`Shift+Enter` 插入不带链接的原话
 - **在文件中定位**：菜单里直接打开卡片所在的月份文件并选中那一行，不用自己翻
 - **网址可点**：正文里的 `https://…` 点击直接用浏览器打开，长网址原位折行；`[[双链]]` 与 Markdown 语法不做解析，卡片内始终是纯文本
 - **要选一段文字**：整张卡片可拖，所以想在卡内选中局部文字时，双击进编辑态再选
@@ -153,16 +157,20 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 | Highlight | What it is |
 | --- | --- |
 | **Low-friction capture** | Permanent sidebar input, `Ctrl/Cmd+J` from anywhere, `Enter` for a new line, `Ctrl+Enter` to save |
+| **Save a selection** | Select text in any note, press `Ctrl/Cmd+Shift+C` or right-click → Save as card; text only, no source link |
 | **Multi-line kept intact** | Continuation lines are stored as indented lines with hard breaks, preserved in the card view and the reading view |
 | **Plain Markdown, no lock-in** | One file per month, no private format, no own sync; any editor can open it, removing the plugin leaves your notes untouched |
 | **Search across everything** | Every monthly file, filterable by tag, date, time, phrase or keyword, combinable |
+| **Summon cards while writing** | `Ctrl/Cmd+Shift+K` opens a picker: search by keyword, `#tag` or date; `Enter` inserts a reference, `Shift+Enter` inserts the text |
 | **Cards usable in writing** | Drag a card into any note to cite it, or copy `![[2026-11#^a1b2c3]]` from the menu; edit the card and every reference follows |
-| **References you can see** | A small dot marks a cited card; the menu states how many notes cite it and jumps straight to them |
+| **References you can see** | A dot marks a cited card; one menu entry opens a panel listing every citing note, and any row jumps to that exact line |
 | **Deletion is reversible** | Confirmation, 9-second undo, last 50 deletions kept; only entries with a block ID count as cards |
 
 ### Capture
 
 Permanent sidebar input that grows with the text (scrolls past 200px). `Ctrl/Cmd+J` opens a floating input on any page (`Cmd` replaces `Ctrl` on macOS, resolved by Obsidian itself), `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
+
+Selecting text in any note and pressing `Ctrl/Cmd+Shift+C` (or right-click → Save as card) turns it into a card without leaving the note. Only the text is stored — no source link, so deleting the original later leaves no dead link. Selections over 300 characters still save, with a note that they are long, and the toast stays clickable for eight seconds to undo. On mobile the command falls back to your most recent selection, so tapping a toolbar button after the editor loses focus still works.
 
 Type `#` for autocomplete over tags already in your vault, ordered by how often you use them; `Tab` or ↑↓ + `Enter` selects, a plain `Enter` still makes a new line.
 
@@ -187,7 +195,7 @@ Double-click a card to edit it in place (`Ctrl+Enter` saves, `Esc` cancels) — 
 
 ### Copy and cite
 
-Drag any part of a card into a note to drop a reference — no handle to aim at — or copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). A dot at the card's top right means other notes cite it; the menu says how many and jumps to the first one. "Reveal in file" opens the month file with the line selected. If you need to select part of the card's text, double-click to enter editing first. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
+Drag any part of a card into a note to drop a reference — no handle to aim at — or copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). A dot at the card's top right means other notes cite it; one menu entry — “cited by N notes” — opens a panel listing each citing note with its folder and how many times it cites the card, and any row jumps to that exact line. `Ctrl/Cmd+Shift+K` opens a picker (the same shell as Quick Switcher) with one card per row: recent cards before you type, then filtering by keyword, `#tag`, `2026-11` or `"a whole phrase"`, with a character-overlap fallback when nothing matches literally and the matched characters highlighted. `Enter` inserts `[[file#^id]]`, `Shift+Enter` inserts the text without a link. "Reveal in file" opens the month file with the line selected. If you need to select part of the card's text, double-click to enter editing first. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
 
 ### Data
 

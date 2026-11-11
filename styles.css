@@ -742,3 +742,152 @@
   border-color: var(--interactive-accent);
   color: var(--text-on-accent);
 }
+
+/* 引用面板：菜单里只有一行入口，名单在这里一次看完 */
+.modal.qm-modal-wide {
+  width: 620px;
+  max-width: 92vw;
+}
+
+.qm-refpanel-title {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+}
+.qm-refpanel-sub {
+  margin-top: 3px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.qm-reflist {
+  max-height: 58vh;
+  overflow-y: auto;
+  margin-top: 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 6px;
+}
+.qm-reflist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-normal);
+}
+.qm-reflist-row:hover {
+  background: var(--background-modifier-hover);
+}
+.qm-reflist-row:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+.qm-reflist-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.qm-reflist-name {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qm-reflist-path {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qm-reflist-n {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 卡片候选：正文最多两行，一条长卡片不该把候选列表撑开 */
+.qm-suggest-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.qm-suggest-when {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.qm-suggest-ref {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-red, #c0392b);
+  margin-left: -3px;
+  flex: none;
+  position: relative;
+  top: 1px;
+}
+.qm-suggest-tags {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+}
+.qm-suggest-body {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  line-height: 1.5;
+  margin-top: 2px;
+  max-height: 3.1em;
+  overflow: hidden;
+  word-break: break-word;
+}
+/* 命中的字标出来，代替「相似度百分比」这种没意义的数字 */
+.qm-hit {
+  background: var(--text-highlight-bg);
+  border-radius: 2px;
+}
+
+/* ---------- 选卡片面板（Ctrl+Shift+K） ---------- */
+
+/* 原生 prompt 本身就宽，这里只保证窄窗口不溢出 */
+.modal.qm-picker-modal {
+  max-width: 92vw;
+}
+.qm-picker-modal .prompt-results {
+  padding: 6px 8px 8px;
+}
+/* 列表项必须走正常文档流：一行一张卡，高度由内容决定。
+   （早期这里误套了 .qm-suggest，那是浮动联想框的类，带 position:absolute，
+   结果所有行叠在同一个位置——这就是「卡片重叠」的根因。） */
+.qm-picker-modal .suggestion-item {
+  display: block;
+  position: static;
+  height: auto;
+  min-height: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-s, 6px);
+  white-space: normal;
+  overflow: hidden;
+}
+.qm-picker-modal .suggestion-item + .suggestion-item {
+  margin-top: 1px;
+  /* 发丝线：不占布局高度，选中底色盖上来时也还看得见分隔 */
+  box-shadow: inset 0 1px 0 var(--background-modifier-border);
+}
+/* ↑↓ 选到哪一行要一眼看得出来：淡底色 + 左边缘一道强调色 */
+.qm-picker-modal .suggestion-item.is-selected {
+  background: var(--background-modifier-hover);
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
+/* 空查询时列的是最近卡片，加一行表头说清楚这是什么 */
+.qm-picker-modal.is-recent .prompt-results::before {
+  content: '最近卡片';
+  display: block;
+  padding: 4px 10px 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}

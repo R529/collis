@@ -4,6 +4,8 @@ const {
   Plugin,
   ItemView,
   Modal,
+  MarkdownView,
+  SuggestModal,
   Notice,
   PluginSettingTab,
   Setting,
@@ -436,15 +438,105 @@ function qmParseBlockRef(raw) {
  * items: [{ sourcePath, destPath, id, ambiguous }]
  * 返回 Map：destPath + '#^' + id -> { notes:Set<来源笔记>, places:number, ambiguous:boolean }
  */
+/** 引用所在文件夹；同一层就返回空，面板上不显示 */
+function qmRefFolder(path) {
+  const parts = String(path == null ? '' : path).split('/');
+  if (parts.length < 2) return '';
+  return parts.slice(0, -1).join('/');
+}
+
+/**
+ * 字符二元组集合。中文没有空格分词，按两个字一切最稳：
+ * 「发布计划」和「下周三的发布计划」能对上「发布」「布计」「计划」。
+ */
+function qmBigrams(text) {
+  const t = String(text == null ? '' : text).toLowerCase().replace(/\s+/g, '');
+  const out = new Set();
+  for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
+  return out;
+}
+
+/** 两段文字的二元组重叠率（0~1）。只在查询足够长时才有意义 */
+function qmBigramScore(a, b) {
+  const A = qmBigrams(a);
+  const B = qmBigrams(b);
+  if (!A.size || !B.size) return 0;
+  let hit = 0;
+  for (const g of A) if (B.has(g)) hit++;
+  return hit / A.size;
+}
+
+/**
+ * 把命中的字标出来。不给「相似度 78%」这种假精确的数字，
+ * 让人自己看命中在哪，比任何百分比都可靠。
+ */
+function qmAppendHits(parent, text, words) {
+  const src = String(text == null ? '' : text);
+  const low = src.toLowerCase();
+  const marks = [];
+  for (const w of words || []) {
+    const needle = String(w || '').toLowerCase();
+    if (!needle) continue;
+    let i = low.indexOf(needle);
+    while (i !== -1 && marks.length < 64) {
+      marks.push([i, i + needle.length]);
+      i = low.indexOf(needle, i + needle.length);
+    }
+  }
+  if (!marks.length) {
+    parent.createSpan({ text: src });
+    return;
+  }
+  marks.sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const m of marks) {
+    const last = merged[merged.length - 1];
+    if (last && m[0] <= last[1]) last[1] = Math.max(last[1], m[1]);
+    else merged.push([m[0], m[1]]);
+  }
+  let at = 0;
+  for (const span of merged) {
+    if (span[0] > at) parent.createSpan({ text: src.slice(at, span[0]) });
+    parent.createSpan({ text: src.slice(span[0], span[1]), cls: 'qm-hit' });
+    at = span[1];
+  }
+  if (at < src.length) parent.createSpan({ text: src.slice(at) });
+}
+
+/**
+ * 从 Obsidian 的链接缓存里取「引用出现在第几行」。
+ * 取不到就返回 -1：跳转时只打开文件、不定位，绝不猜一个行号。
+ */
+function qmLinkLine(link) {
+  try {
+    const pos = link && link.position;
+    const start = pos && pos.start;
+    const n = start && start.line;
+    return typeof n === 'number' && n >= 0 ? n : -1;
+  } catch (e) {
+    return -1;
+  }
+}
+
 function qmAggregateRefs(items) {
   const out = new Map();
   for (const it of items || []) {
     if (!it || !it.destPath || !it.id) continue;
     const key = it.destPath + '#^' + String(it.id).toLowerCase();
     let e = out.get(key);
-    if (!e) out.set(key, (e = { notes: new Set(), places: 0, ambiguous: false }));
+    if (!e) out.set(key, (e = { notes: new Set(), places: 0, ambiguous: false, by: new Map() }));
     e.places += 1;
-    if (it.sourcePath) e.notes.add(it.sourcePath);
+    if (it.sourcePath) {
+      e.notes.add(it.sourcePath);
+      // 只记「哪篇笔记」不够：菜单里点名字要跳到引用那一行，所以连行号一起存
+      const line = typeof it.line === 'number' && it.line >= 0 ? it.line : -1;
+      const lines = e.by.get(it.sourcePath);
+      if (lines) {
+        if (line >= 0) lines.push(line);
+      } else {
+        e.by.set(it.sourcePath, line >= 0 ? [line] : []);
+      }
+    }
     if (it.ambiguous) e.ambiguous = true;
   }
   return out;
@@ -1051,6 +1143,179 @@ class DraftSwitchModal extends Modal {
 /* ------------------------------------------------------------------ */
 /* 最近删除                                                            */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 选卡片的面板。
+ * 用 Obsidian 原生的 SuggestModal：顶部搜索框、下面全宽列表、↑↓ 选、回车确认，
+ * 和「快速切换」是同一套壳子，不用自己画输入框和列表。
+ * 快捷键 Ctrl+Shift+K 打开，正文里不插任何触发字符。
+ */
+class CardPickerModal extends SuggestModal {
+  constructor(app, plugin, opts) {
+    super(app);
+    this.plugin = plugin;
+    this.opts = opts || {};
+    this.limit = 30;
+    this.setPlaceholder('搜索卡片：关键词 · #标签 · 2026-11');
+    this.emptyStateText = '没有匹配的卡片';
+  }
+
+  // 每次敲字都会调一次；数据没预热过就现读，不再依赖启动时的预热
+  async getSuggestions(query) {
+    const rows = await this.plugin.suggestCardsAsync(query);
+    this._rows = rows;
+    // 空查询时列的是「最近的卡片」，给列表头一个说明，免得看起来像没搜就冒出来一堆
+    if (this.modalEl) {
+      const recent = !String(query || '').trim() && rows.length > 0;
+      if (recent) this.modalEl.addClass('is-recent');
+      else this.modalEl.removeClass('is-recent');
+    }
+    return rows;
+  }
+
+  renderSuggestion(item, el) {
+    this.plugin.renderSuggestRow(item, el);
+  }
+
+  /**
+   * 当前高亮的那条候选。
+   * 原生把 suggestions / selectedSuggestion 留在内部字段里（没进 d.ts），
+   * 所以先判存在再用；取不到就退回列表里标了 is-selected 的那一行。
+   */
+  currentRow() {
+    const list = this.suggestions;
+    if (Array.isArray(list) && list.length) {
+      let i = this.selectedSuggestion;
+      if (typeof i !== 'number' || i < 0 || i >= list.length) i = 0;
+      if (list[i]) return list[i];
+    }
+    const rows = this._rows || [];
+    const root = this.resultContainerEl || this.modalEl;
+    if (!rows.length || !root || typeof root.querySelectorAll !== 'function') return null;
+    const items = root.querySelectorAll('.suggestion-item');
+    let at = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].classList && items[i].classList.contains('is-selected')) {
+        at = i;
+        break;
+      }
+    }
+    return rows[at] || rows[0] || null;
+  }
+
+  onChooseSuggestion(item, evt) {
+    // 回车和 Shift+回车都走这里，防一手重复触发（触发两次就插两条）
+    if (this._chosen) return;
+    this._chosen = true;
+
+    const ed = this.opts.editor || this.plugin.currentEditor();
+    if (!ed) {
+      new Notice('先打开一篇笔记，再插入卡片');
+      return;
+    }
+    // Shift+回车：插入纯文本（只想抄原话，不想建链接）
+    const plain = !!(evt && evt.shiftKey);
+    this.plugin.insertCardRef(item.card, ed, this.opts.from, this.opts.to, plain);
+  }
+
+  onOpen() {
+    super.onOpen();
+    // 原生 prompt 本身就够宽，这里只是保证窄窗口下不缩成一条缝
+    if (this.modalEl) this.modalEl.addClass('qm-picker-modal');
+    if (this.modalEl) this.modalEl.removeClass('is-recent');
+    // 底部按键说明用原生那一条，不自己画
+    if (typeof this.setInstructions === 'function') {
+      this.setInstructions([
+        { command: '↑↓', purpose: '选择' },
+        { command: '回车', purpose: '插入引用' },
+        { command: 'Shift+回车', purpose: '插入纯文本' },
+      ]);
+    }
+    // 原生提案框只认「不带修饰键的回车」，Shift+回车整条被吞掉、什么都不会发生。
+    // 这里在 document 的捕获阶段补一个：只在面板打开期间存在、只认面板自己的输入框，
+    // 也不注册任何全局快捷键，关掉就摘掉。
+    this._shiftEnter = (e) => {
+      if (!e || e.key !== 'Enter' || !e.shiftKey || e.isComposing) return;
+      if (!this.inputEl || e.target !== this.inputEl) return;
+      const item = this.currentRow();
+      if (!item) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.onChooseSuggestion(item, { shiftKey: true });
+      this.close();
+    };
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('keydown', this._shiftEnter, true);
+    }
+  }
+
+  onClose() {
+    if (this._shiftEnter && typeof document !== 'undefined' && document.removeEventListener) {
+      document.removeEventListener('keydown', this._shiftEnter, true);
+    }
+    this._shiftEnter = null;
+    super.onClose();
+  }
+}
+
+/**
+ * 全部引用：被哪几篇笔记引用、各引用了几处。
+ * 菜单里只留一行入口，具体名单都在这一个面板里看完——
+ * 不再「前 5 篇在菜单、剩下的在弹窗」，两处找东西是最难用的。
+ */
+class RefListModal extends Modal {
+  constructor(app, info, onPick) {
+    super(app);
+    this.info = info || { notes: 0, places: 0, list: [] };
+    this.onPick = onPick;
+  }
+
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    contentEl.empty();
+    contentEl.addClass('qm-refpanel');
+    // Modal 默认会缩到内容宽度，引用一多就成一条窄缝
+    if (modalEl) modalEl.addClass('qm-modal-wide');
+
+    const n = this.info.notes || 0;
+    const places = this.info.places || n;
+
+    contentEl.createEl('div', { text: '被 ' + n + ' 篇笔记引用', cls: 'qm-refpanel-title' });
+    contentEl.createEl('div', {
+      text: places > n ? '共 ' + places + ' 处 · 点击跳到引用所在位置' : '点击跳到引用所在位置',
+      cls: 'qm-refpanel-sub',
+    });
+
+    const box = contentEl.createDiv({ cls: 'qm-reflist' });
+    for (const r of this.info.list || []) {
+      const row = box.createDiv({ cls: 'qm-reflist-row' });
+      row.setAttr('tabindex', '0');
+
+      const main = row.createDiv({ cls: 'qm-reflist-main' });
+      main.createEl('span', { text: r.name, cls: 'qm-reflist-name' });
+      // 文件夹单独一行小字：同名笔记才分得清，同层的不占地方
+      const folder = qmRefFolder(r.path);
+      if (folder) main.createEl('span', { text: folder, cls: 'qm-reflist-path' });
+      if (r.places > 1) row.createEl('span', { text: r.places + ' 处', cls: 'qm-reflist-n' });
+
+      const go = () => {
+        this.close();
+        if (typeof this.onPick === 'function') this.onPick(r);
+      };
+      row.onclick = go;
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          go();
+        }
+      });
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
 
 class TrashModal extends Modal {
   constructor(app, plugin) {
@@ -2075,13 +2340,13 @@ class CardsView extends ItemView {
       return;
     }
     el.removeClass('is-hidden');
-    const more = info.places > n ? '，共 ' + info.places + ' 处' : '';
-    const names = info.names.slice(0, 3).join('、') + (info.names.length > 3 ? ' 等' : '');
-    el.setAttr(
-      'title',
-      '被 ' + n + ' 篇笔记引用' + more + ' · ' + names +
-        (info.ambiguous ? '（有同名文件，链接可能指错，注意）' : '')
-    );
+
+    // 鼠标停在红点上就能看到被谁引用，不用点开菜单
+    const lines = ['被 ' + n + ' 篇笔记引用' + (info.places > n ? ' · 共 ' + info.places + ' 处' : '')];
+    for (const nm of info.names.slice(0, 8)) lines.push('· ' + nm);
+    if (info.names.length > 8) lines.push('· …还有 ' + (info.names.length - 8) + ' 篇');
+    if (info.ambiguous) lines.push('（有同名文件，链接可能指错，注意）');
+    el.setAttr('title', lines.join('\n'));
   }
 
   /**
@@ -2297,13 +2562,17 @@ class CardsView extends ItemView {
         i.setTitle('引用统计准备中…').setIcon('corner-down-right').setDisabled(true)
       );
     } else if (n) {
-      const names = info.names.slice(0, 3).join('、') + (info.names.length > 3 ? ' 等' : '');
+      // 笔记名不铺在菜单里：菜单是「动作」，被谁引用是「信息」，
+      // 混在一起会被当成一排功能。点这一行单独看，一次看全。
       menu.addItem((i) =>
         i
-          .setTitle('被 ' + n + ' 篇笔记引用 · ' + names)
+          .setTitle('被 ' + n + ' 篇笔记引用…')
           .setIcon('corner-down-right')
-          .setDisabled(true)
+          .onClick(() =>
+            new RefListModal(this.app, info, (r) => this.openRef(r.path, r.line)).open()
+          )
       );
+
       menu.addItem((i) =>
         i
           .setTitle(this.state.refFilter === 'has' ? '取消「只看已引用」' : '只看被引用的卡片')
@@ -2332,6 +2601,26 @@ class CardsView extends ItemView {
       menu.showAtPosition(r ? { x: r.left - 160, y: r.bottom + 4 } : { x: 120, y: 120 });
     }
     return menu;
+  }
+
+  /**
+   * 跳到引用这张卡片的那篇笔记。
+   * 行号来自 Obsidian 自己的链接缓存；取不到就只打开文件，不猜位置。
+   * 用新标签页打开：你正在看的东西不该被顶掉。
+   */
+  async openRef(path, line) {
+    const file = this.app.vault.getAbstractFileByPath(String(path || ''));
+    if (!(file instanceof TFile)) {
+      new Notice('这篇笔记找不到了，可能已删除或改名');
+      return;
+    }
+    try {
+      const leaf = this.app.workspace.getLeaf('tab');
+      const opts = typeof line === 'number' && line >= 0 ? { eState: { line } } : undefined;
+      await leaf.openFile(file, opts);
+    } catch (e) {
+      new Notice('打不开这篇笔记：' + (e && e.message ? e.message : '未知原因'));
+    }
   }
 
   /** 复制块链接：与 1.6 以来一致，跟随「嵌入」开关 */
@@ -2708,6 +2997,7 @@ class QuickMemoPlugin extends Plugin {
             destPath: dest.path,
             id: ref.id,
             ambiguous: (nameCount.get(base) || 0) > 1,
+            line: qmLinkLine(l),
           });
         }
       }
@@ -2751,12 +3041,40 @@ class QuickMemoPlugin extends Plugin {
     return e ? e.notes.size : 0;
   }
 
-  /** 被引用的总数 / 来源笔记名，供提示文字用 */
+  /**
+   * 被引用的总数 + 每一篇的来源（名字、引用行号）。
+   * 名字要能点、能跳，所以这里把路径和行号一起交出去；
+   * 不同文件夹里有同名笔记时补一段父目录，否则菜单上分不清。
+   */
   refSummary(card) {
     const e = this.refEntry(card);
     if (!e) return null;
-    const names = Array.from(e.notes).map((p) => String(p).split('/').pop().replace(/\.md$/i, ''));
-    return { notes: e.notes.size, places: e.places, names, ambiguous: e.ambiguous };
+
+    const rows = [];
+    const seen = new Map();
+    for (const p of e.notes) {
+      const name = String(p).split('/').pop().replace(/\.md$/i, '');
+      seen.set(name, (seen.get(name) || 0) + 1);
+      const lines = (e.by && e.by.get(p)) || [];
+      const line = lines.length ? lines.reduce((a, b) => (b < a ? b : a), lines[0]) : -1;
+      rows.push({ path: String(p), name, line, places: lines.length });
+    }
+    for (const r of rows) {
+      if ((seen.get(r.name) || 0) > 1) {
+        const parts = r.path.split('/');
+        if (parts.length > 1) r.name = r.name + ' · ' + parts[parts.length - 2];
+      }
+    }
+    // 引用位置靠前的排前面：多半是正文里正式用到的地方
+    rows.sort((a, b) => (a.line < 0 ? 1 : 0) - (b.line < 0 ? 1 : 0) || a.line - b.line || a.name.localeCompare(b.name));
+
+    return {
+      notes: e.notes.size,
+      places: e.places,
+      names: rows.map((r) => r.name),
+      list: rows,
+      ambiguous: e.ambiguous,
+    };
   }
 
   /** 通知已打开的面板：只刷新引用数字，不重读文件 */
@@ -2797,6 +3115,15 @@ class QuickMemoPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'capture-selection',
+      name: '把选中的内容存为卡片',
+      // 用 callback 而不是 editorCallback：手机上从工具栏调命令时
+      // 编辑器会短暂失焦，editorCallback 那种「只在编辑器里可用」会点不动
+      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'C' }],
+      callback: () => this.captureSelection(this.currentEditor()),
+    });
+
+    this.addCommand({
       id: 'quick-capture',
       name: '快速记一条',
       // 'Mod' 由 Obsidian 按平台解析：macOS 是 Cmd，Windows/Linux 是 Ctrl。
@@ -2806,11 +3133,57 @@ class QuickMemoPlugin extends Plugin {
       callback: () => new CaptureModal(this.app, this).open(),
     });
 
+    this.addCommand({
+      id: 'insert-card',
+      name: '插入卡片（引用或全文）',
+      hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'K' }],
+      callback: () => this.openCardPicker(),
+    });
+
     this.addSettingTab(new QuickMemoSettingTab(this.app, this));
+
+    // 编辑器右键：选中一段就能存成卡片，不用记快捷键
+    this.registerEvent(
+      this.app.workspace.on('editor-menu', (menu, editor) => {
+        let sel = '';
+        try {
+          sel = editor.getSelection();
+        } catch (e) {
+          sel = '';
+        }
+        if (!String(sel || '').trim()) return;
+        menu.addItem((i) =>
+          i.setTitle('存为卡片').setIcon(ICON_ID).onClick(() => this.captureSelection(editor))
+        );
+      })
+    );
+
+    // 记下最近一次合法选区：阅读模式没有编辑器对象，手机端点按钮又会丢焦点，
+    // 两处都靠这份缓存兜底。只认 60 秒内的，避免存进很久以前选的东西。
+    this._lastSelection = '';
+    this._lastSelectionAt = 0;
+    this.registerDomEvent(document, 'selectionchange', () => {
+      try {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return;
+        const t = String(sel).trim();
+        if (!t) return;
+        this._lastSelection = t;
+        this._lastSelectionAt = Date.now();
+      } catch (e) {
+        /* 取不到就算了，不影响编辑器内的选区 */
+      }
+    });
 
     // 文件被改动后顺手收走空的日期标题：不论是插件删的，
     // 还是你在 Obsidian 编辑器里手动删掉的卡片
-    this.registerEvent(this.app.vault.on('modify', (f) => this.pruneSoon(f)));
+    this.registerEvent(
+      this.app.vault.on('modify', (f) => {
+        this.pruneSoon(f);
+        // 卡片改了，候选缓存就旧了；延迟重建，别在连续敲字时反复读盘
+        this.invalidateCards();
+      })
+    );
 
     // 引用统计：别的笔记里增删块链接后跟着更新。只读索引，不写任何文件。
     // 「resolved」是 Obsidian 建完索引的那一下，用来纠正启动初期的空数字
@@ -2826,8 +3199,13 @@ class QuickMemoPlugin extends Plugin {
 
     // 工作区就绪后体检一次：有没有「没有块 ID」的时间条目（严格模式下它们不显示）
     const check = () => this.checkUnmanagedEntries();
-    if (this.app.workspace.onLayoutReady) this.app.workspace.onLayoutReady(check);
-    else check();
+    const boot = () => {
+      check();
+      // 提前算一次候选：;; 触发时必须同步就有结果，不能等读盘
+      this.warmCards();
+    };
+    if (this.app.workspace.onLayoutReady) this.app.workspace.onLayoutReady(boot);
+    else boot();
   }
 
   onunload() {
@@ -2838,6 +3216,10 @@ class QuickMemoPlugin extends Plugin {
     if (this._refTimer) {
       clearTimeout(this._refTimer);
       this._refTimer = null;
+    }
+    if (this._cardWarmTimer) {
+      clearTimeout(this._cardWarmTimer);
+      this._cardWarmTimer = null;
     }
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_QM);
   }
@@ -3347,7 +3729,7 @@ class QuickMemoPlugin extends Plugin {
 
   /* ---------------- 增 ---------------- */
 
-  async appendCard(text) {
+  async appendCard(text, opts) {
     const now = moment();
     const date = now.format('YYYY-MM-DD');
     const time = now.format('HH:mm');
@@ -3359,10 +3741,12 @@ class QuickMemoPlugin extends Plugin {
       return false;
     }
 
+    let madeId = '';
     try {
       await this.mutateFile(path, (content) => {
         // ID 在文件内必须唯一，否则 Obsidian 的块引用会指错
         const id = this.uniqueIdIn(content);
+        madeId = id;
         return qmInsertCardLines(content, date, qmFormatEntry(time, bodyLines, id));
       });
     } catch (e) {
@@ -3370,9 +3754,273 @@ class QuickMemoPlugin extends Plugin {
       return false;
     }
 
-    new Notice('已记下');
+    // 刚写进去的那张卡：捕获选中文字后要能立刻撤销，就得知道它的身份
+    this._lastAppended = { path, date, time, id: madeId, body: bodyLines.join('\n') };
+
+    // 捕获选中文字时提示由调用方给（要带「点此撤销」），这里别抢先弹
+    if (!(opts && opts.silent)) new Notice('已记下');
     return true;
   }
+
+  /**
+   * 把当前选中的文字存成一张卡片。
+   * 桌面端优先读编辑器选区；读不到（阅读模式、或手机端点了按钮导致编辑器失焦）
+   * 就用最近一次合法选区，超过 60 秒的旧选区不要，免得存进别处的旧内容。
+   */
+  async captureSelection(editor) {
+    let text = '';
+    try {
+      if (editor && typeof editor.getSelection === 'function') text = editor.getSelection();
+    } catch (e) {
+      text = '';
+    }
+    if (!String(text || '').trim()) {
+      const fresh = Date.now() - (this._lastSelectionAt || 0) < 60000;
+      if (fresh) text = this._lastSelection || '';
+    }
+
+    text = String(text || '').replace(/\r\n?/g, '\n').trim();
+    if (!text) {
+      new Notice('先在正文里选中一段文字');
+      return false;
+    }
+
+    const ok = await this.appendCard(text, { silent: true });
+    if (!ok) return false;
+
+    // 长文也能存，但要说一句：这是卡片库，不是剪藏库
+    const long = text.length > 300;
+    const msg = long ? '已存为卡片（' + text.length + ' 字，偏长）· 点此撤销' : '已存为卡片 · 点此撤销';
+    const n = new Notice(msg, 8000);
+    try {
+      if (n && n.noticeEl) {
+        n.noticeEl.addClass('qm-undo-toast');
+        n.noticeEl.addEventListener('click', () => {
+          n.hide();
+          this.undoLastCapture();
+        });
+      }
+    } catch (e) {
+      /* 点不了就从「最近删除」里找回来 */
+    }
+    return true;
+  }
+
+  /** 撤销刚存的卡片：走正常删除流程（进回收站），但不弹第二个「已删除·撤销」 */
+  async undoLastCapture() {
+    const made = this._lastAppended;
+    if (!made) return;
+    this._lastAppended = null;
+    await this.deleteCard(
+      { filePath: made.path, date: made.date, time: made.time, body: made.body, id: made.id },
+      { quiet: true }
+    );
+  }
+
+  /** 当前活动编辑器（手机端工具栏调命令时也能拿到） */
+  currentEditor() {
+    // 优先用 activeEditor；旧版本或焦点在侧栏时退回到活动笔记视图
+    try {
+      const ae = this.app.workspace.activeEditor;
+      if (ae && ae.editor) return ae.editor;
+    } catch (e) {
+      /* 旧版本没有 activeEditor */
+    }
+    try {
+      const view = this.app.workspace.getActiveViewOfType
+        ? this.app.workspace.getActiveViewOfType(MarkdownView)
+        : null;
+      if (view && view.editor) return view.editor;
+    } catch (e) {
+      /* 没有活动的 Markdown 视图 */
+    }
+    return null;
+  }
+
+  /* ---------------- 卡片候选（;; 与插入面板共用） ---------------- */
+
+  /**
+   * 改动后延迟重建，不直接把缓存清空：
+   * 清空的话连续敲字会一直重置定时器，缓存可能长期为空，
+   * 打开面板就是一片空白。留着旧数据最多晚 1.2 秒。
+   */
+  invalidateCards() {
+    if (this._cardWarmTimer) clearTimeout(this._cardWarmTimer);
+    this._cardWarmTimer = setTimeout(() => {
+      this._cardWarmTimer = null;
+      this.warmCards();
+    }, 1200);
+  }
+
+  async warmCards() {
+    try {
+      this._cardCache = await this.readAllCards();
+    } catch (e) {
+      this._cardCache = this._cardCache || [];
+    }
+  }
+
+  /** 面板打开时用的数据：没预热过就现读一次，绝不给一个空列表 */
+  async suggestCardsAsync(query) {
+    if (!this._cardCache || !this._cardCache.length) await this.warmCards();
+    return this.suggestCards(query);
+  }
+
+  /**
+   * 打开选卡片面板。记下此刻的光标位置：面板是模态的，
+   * 打开后编辑器会失焦，等选定再读光标可能已经是别处的了。
+   */
+  openCardPicker() {
+    const ed = this.currentEditor();
+    let from = null;
+    let to = null;
+    if (ed) {
+      try {
+        from = ed.getCursor('from');
+        to = ed.getCursor('to');
+      } catch (e) {
+        from = null;
+        to = null;
+      }
+    }
+    new CardPickerModal(this.app, this, { editor: ed, from, to }).open();
+  }
+
+  /** 当前笔记的标签，用来给候选加权（同一主题的卡片更容易被想起来） */
+  currentNoteTags() {
+    try {
+      const ae = this.app.workspace.activeEditor;
+      const file = ae && ae.file;
+      if (!file) return [];
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) return [];
+      const out = [];
+      for (const t of cache.tags || []) {
+        const v = String((t && t.tag) || '').replace(/^#/, '').toLowerCase();
+        if (v) out.push(v);
+      }
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** 卡片写了多少天。日期段是现成的，不用额外存 */
+  cardAgeDays(card) {
+    try {
+      const d = moment(String((card && card.date) || ''), 'YYYY-MM-DD', true);
+      if (!d || typeof d.isValid !== 'function' || !d.isValid()) return null;
+      return moment().startOf('day').diff(d.clone().startOf('day'), 'days');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * 候选与排序。同步返回，数据来自预热好的缓存（触发时才不去读盘）。
+   * 口径：字面命中为主，不装语义——写卡片和写文章用的是同一批词。
+   */
+  suggestCards(query) {
+    const cards = this._cardCache || [];
+    if (!cards.length) return [];
+
+    const raw = String(query || '').trim();
+    const conds = qmParseQuery(raw);
+    const words = conds.filter((c) => c.kind === 'text').map((c) => c.value);
+    const noteTags = this.currentNoteTags();
+
+    const rows = [];
+    for (const c of cards) {
+      const strict = qmCardMatches(c, conds);
+      // 严格命中不到时，用字符二元组兜一层：
+      // 搜「写作」而卡片里写的是「写字」，硬过滤会一片空白。
+      let sim = 0;
+      if (!strict) {
+        if (!raw) continue;
+        sim = qmBigramScore(raw, c.bodyLower || '');
+        const low = raw.toLowerCase();
+        const tagHit = (c.tags || []).some((t) => String(t).toLowerCase().indexOf(low) !== -1);
+        if (sim < 0.28 && !tagHit) continue;
+      }
+      rows.push({
+        card: c,
+        words,
+        score: strict ? this.scoreCard(c, words, raw, noteTags) : sim * 5,
+        fuzzy: !strict,
+      });
+    }
+    rows.sort((a, b) => b.score - a.score || String(b.card.date).localeCompare(String(a.card.date)));
+    return rows.slice(0, 12);
+  }
+
+  scoreCard(card, words, raw, noteTags) {
+    let score = 0;
+    const body = String(card.bodyLower || '');
+
+    for (const w of words) {
+      if (w && body.indexOf(w) !== -1) score += 3;
+    }
+    // 选中的整段话没有词能直接命中时，靠二元组找近似
+    if (raw.length >= 4) score += qmBigramScore(raw, body) * 5;
+
+    // 被其他笔记用过 = 有分量，多给一点
+    score += Math.min(2, this.refCount(card));
+
+    const tags = card.tags || [];
+    for (const t of tags) {
+      if (noteTags.indexOf(String(t).toLowerCase()) !== -1) score += 2;
+    }
+
+    const age = this.cardAgeDays(card);
+    if (age !== null && age <= 30) score += 1;
+    return score;
+  }
+
+  /** 候选行：时间 + 引用点 + 标签 + 首行（命中词高亮），不显示「相似度」 */
+  renderSuggestRow(item, el) {
+    el.empty();
+    // 注意：这里绝对不能用 .qm-suggest——那是卡片编辑框里浮动联想框的类，
+    // 带 position:absolute，套到列表项上会让所有行叠在同一处。
+    el.addClass('qm-picker-row');
+
+    const head = el.createDiv({ cls: 'qm-suggest-head' });
+    head.createSpan({ cls: 'qm-suggest-when', text: String(item.card.date).slice(5) + ' ' + item.card.time });
+    if (item.card.id && this.refCount(item.card)) head.createSpan({ cls: 'qm-suggest-ref' });
+    const tags = item.card.tags || [];
+    if (tags.length) {
+      head.createSpan({ cls: 'qm-suggest-tags', text: tags.slice(0, 3).map((t) => '#' + t).join(' ') });
+    }
+
+    const body = el.createDiv({ cls: 'qm-suggest-body' });
+    qmAppendHits(body, qmFirstLine(item.card.body, 80), item.words || []);
+  }
+
+  /**
+   * 插进正文。plain=true 时插纯文本（只想抄原话），否则插块引用。
+   * 没有块 ID 的旧卡片退化成纯文本，别造一个跳不过去的链接。
+   */
+  insertCardRef(card, editor, start, end, plain) {
+    let insert = '';
+    if (plain) {
+      insert = qmPasteText(card.body);
+    } else if (card.id) {
+      const bang = this.settings.blockRefEmbed ? '!' : '';
+      insert = bang + '[[' + this.linkTarget(card) + '#^' + card.id + ']]';
+    } else {
+      insert = qmPasteText(card.body);
+      new Notice('这张卡片没有块 ID，插入的是全文');
+    }
+    // 面板打开时编辑器会失焦，光标位置可能已经取不到；取不到就别炸
+    try {
+      const from = start || editor.getCursor('from');
+      const to = end || editor.getCursor('to');
+      editor.replaceRange(insert, from, to);
+    } catch (e) {
+      editor.replaceSelection(insert);
+    }
+    return insert;
+  }
+
 
   /* ---------------- 补块 ID ---------------- */
 
@@ -3458,7 +4106,7 @@ class QuickMemoPlugin extends Plugin {
 
   /* ---------------- 删 ---------------- */
 
-  async deleteCard(card) {
+  async deleteCard(card, opts) {
     let removed = null;
 
     const res = await this.mutateCardFile(card, (lines, hit) => {
@@ -3480,6 +4128,9 @@ class QuickMemoPlugin extends Plugin {
       lines: removed,
       filePath: card.filePath,
     });
+
+    // 撤销「存为卡片」时也会走到这里：那一张不要再来一个「已删除·撤销」
+    if (opts && opts.quiet) return;
 
     const n = new Notice('已删除 · 点此撤销', 9000);
     try {
