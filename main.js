@@ -9,10 +9,44 @@ const {
   Setting,
   TFile,
   TFolder,
+  addIcon,
   moment,
 } = require('obsidian');
 
 const VIEW_TYPE_QM = 'qm-cards-view';
+
+/* ------------------------------------------------------------------ */
+/* 侧栏 / 标签页图标：一颗四芒星加一条拖尾（流星）                     */
+/* ------------------------------------------------------------------ */
+/* 为什么不用内置图标：内置 message-square 全市场有 13 个插件在引用；
+   内置 sparkle（单颗四芒星）正被同类速记插件 Spark Memo 挂在侧栏上。
+   这颗带拖尾的星在内置图标表里没有对应项，市场内也无同形（核查于
+   1,129 个插件，见 v1.8.4 发布说明）。                                */
+
+const ICON_ID = 'collis-meteor';
+
+const ICON_METEOR = (() => {
+  /** 四芒星：四条边向内凹，r 为外接半径 */
+  const star = (cx, cy, r) => {
+    const d = r * 0.16;
+    const a = r * 0.34;
+    return (
+      `M${cx} ${cy - r}` +
+      `C${cx + d} ${cy - a} ${cx + a} ${cy - d} ${cx + r} ${cy}` +
+      `C${cx + a} ${cy + d} ${cx + d} ${cy + a} ${cx} ${cy + r}` +
+      `C${cx - d} ${cy + a} ${cx - a} ${cy + d} ${cx - r} ${cy}` +
+      `C${cx - a} ${cy - d} ${cx - d} ${cy - a} ${cx} ${cy - r} Z`
+    );
+  };
+  // 注意：addIcon 的第二个参数是 <svg> 的**内部内容**，外壳由 Obsidian 自己
+  // 包（固定 viewBox="0 0 100 100"），所以这里不写 <svg> 标签。
+  // 自定义图标不带默认描边，fill / stroke 都要写全；颜色一律 currentColor。
+  return (
+    `<path d="${star(40, 40, 31)}" fill="currentColor" stroke="none"/>` +
+    '<path d="M62 62 L88 88" fill="none" stroke="currentColor"' +
+    ' stroke-width="10" stroke-linecap="round"/>'
+  );
+})();
 
 const DEFAULT_SETTINGS = {
   folderPath: '00-Inbox/速记',
@@ -1310,7 +1344,7 @@ class CardsView extends ItemView {
   }
 
   getIcon() {
-    return 'message-square';
+    return ICON_ID;
   }
 
   async onOpen() {
@@ -2455,7 +2489,10 @@ class QuickMemoPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_QM, (leaf) => new CardsView(leaf, this));
 
-    this.addRibbonIcon('message-square', 'Collis', async () => {
+    // 图标必须先注册，addRibbonIcon 才认得这个名字
+    addIcon(ICON_ID, ICON_METEOR);
+
+    this.addRibbonIcon(ICON_ID, 'Collis', async () => {
       await this.activateView();
     });
 
