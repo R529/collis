@@ -9,7 +9,9 @@ const {
   Setting,
   TFile,
   TFolder,
+  Menu,
   addIcon,
+  setIcon,
   moment,
 } = require('obsidian');
 
@@ -380,6 +382,21 @@ function qmPasteText(body) {
   return lines
     .map((l, i) => (i < lines.length - 1 && l.trim() ? l + '  ' : l))
     .join('\n');
+}
+
+/**
+ * 卡片正文的摘要：取第一行，压缩空白，超长截断。
+ * 用在「另一条还没保存」的提示里，让用户一眼认出是哪条。
+ */
+function qmFirstLine(body, max) {
+  const limit = typeof max === 'number' ? max : 18;
+  const line = String(body || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || '';
+  const flat = line.replace(/\s+/g, ' ');
+  return flat.length > limit ? flat.slice(0, limit) + '…' : flat;
 }
 
 /** 取文件名（不含目录和 .md），统一小写便于比对 */
@@ -981,6 +998,56 @@ class ConfirmModal extends Modal {
   }
 }
 
+/**
+ * 「另一条还在编辑」的岔路口。
+ * 三个出口都由用户点：留在这条（默认，等同 Esc）/ 放弃修改 / 保存并继续。
+ * 不做「自动保存」——自动写盘会在内容为空或定位失败时留下烂摊子。
+ */
+class DraftSwitchModal extends Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts || {};
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('div', { text: '另一条卡片还没保存', cls: 'qm-confirm-text' });
+    contentEl.createEl('div', {
+      text:
+        '「' + String(this.opts.preview || '') + '」改过但没保存。' +
+        '要先存下来，再编辑这条吗？',
+      cls: 'qm-confirm-detail',
+    });
+
+    const bar = contentEl.createDiv({ cls: 'qm-edit-bar' });
+
+    // 顺序：越靠右越「继续」，与保存/取消的既有习惯一致
+    const stay = bar.createEl('button', { text: '留在这条', cls: 'qm-mini-btn' });
+    stay.onclick = () => this.close();
+
+    const drop = bar.createEl('button', { text: '放弃修改', cls: 'qm-mini-btn' });
+    drop.onclick = () => {
+      this.close();
+      if (typeof this.opts.onDiscard === 'function') this.opts.onDiscard();
+    };
+
+    const save = bar.createEl('button', { text: '保存并继续', cls: 'qm-mini-btn is-primary' });
+    save.onclick = async () => {
+      if (typeof this.opts.onSave !== 'function') {
+        this.close();
+        return;
+      }
+      const okSaved = await this.opts.onSave();
+      if (okSaved !== false) this.close();
+    };
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 最近删除                                                            */
 /* ------------------------------------------------------------------ */
@@ -1329,6 +1396,12 @@ class CardsView extends ItemView {
       selectMode: false,
       selected: new Set(),
     };
+
+    // 拖拽与双击的判定状态（不参与渲染，只在一张卡的交互里用）
+    this._lastDown = 0; // 上一次按下卡片的时刻
+    this._dblRisk = false; // 这一次按下是否紧跟着上一次（视为双击的第二下）
+    this._noIdHint = false; // 「没有块 ID，拖的是全文」只提示一次
+    this._refBadges = new Map();
   }
 
   get NO_TAG() {
@@ -1981,35 +2054,27 @@ class CardsView extends ItemView {
     el.scrollTop = keepScroll;
   }
 
-  /** 卡片右上角的引用数字。0 次时元素存在但不显示，方便之后就地更新 */
-  mountRefBadge(parent, card, key) {
-    const el = parent.createSpan({ cls: 'qm-refs' });
+  /**
+   * 时间后面的小圆点：只表示「这张卡被笔记引用过」，不显示次数、不响应点击。
+   * 次数与来源都在「···」菜单里看。0 次时元素存在但不显示，方便就地更新。
+   */
+  mountRefDot(parent, card, key) {
+    const el = parent.createSpan({ cls: 'qm-ref' });
     if (this._refBadges) this._refBadges.set(key, { el, card });
-    this.paintRefBadge(el, card);
-    el.onclick = (e) => {
-      e.stopPropagation();
-      if (this.state.selectMode) {
-        this.toggleSelected(card);
-        return;
-      }
-      if (!this.plugin.refCount(card)) return;
-      this.setRefFilter(this.state.refFilter === 'has' ? '' : 'has');
-    };
+    this.paintRefDot(el, card);
     return el;
   }
 
-  paintRefBadge(el, card) {
+  paintRefDot(el, card) {
     if (!el) return;
     const info = this.plugin.refSummary(card);
     const n = info ? info.notes : 0;
     if (!n) {
-      el.setText('');
       el.addClass('is-hidden');
       el.setAttr('title', '');
       return;
     }
     el.removeClass('is-hidden');
-    el.setText('被引 ' + n);
     const more = info.places > n ? '，共 ' + info.places + ' 处' : '';
     const names = info.names.slice(0, 3).join('、') + (info.names.length > 3 ? ' 等' : '');
     el.setAttr(
@@ -2030,7 +2095,7 @@ class CardsView extends ItemView {
       return;
     }
     if (!this._refBadges || !this._refBadges.size) return;
-    for (const { el, card } of this._refBadges.values()) this.paintRefBadge(el, card);
+    for (const { el, card } of this._refBadges.values()) this.paintRefDot(el, card);
   }
 
   cardKey(card) {
@@ -2087,7 +2152,7 @@ class CardsView extends ItemView {
 
     const head = box.createDiv({ cls: 'qm-card-head' });
     head.createSpan({ cls: 'qm-time', text: card.time });
-    this.mountRefBadge(head, card, key);
+    this.mountRefDot(head, card, key);
 
     /* ---- 编辑态 ---- */
     if (this.state.editingKey === key) {
@@ -2118,9 +2183,12 @@ class CardsView extends ItemView {
           new Notice('内容不能为空');
           return;
         }
+        // 先写盘，写成功才退出编辑态：失败时草稿留在原处，不白打一遍
+        const saved = await this.plugin.updateCard(card, v);
+        if (!saved) return;
         this.state.editingKey = null;
         this.state.editingDraft = null;
-        await this.plugin.updateCard(card, v);
+        this.renderList();
       };
 
       ta.addEventListener('keydown', (e) => {
@@ -2176,53 +2244,279 @@ class CardsView extends ItemView {
       };
     }
 
-    /* ---- 操作（多选模式下隐藏，点整块即选中） ---- */
+    /* ---- 多选模式下：点整块即选中，不放「···」、不拖 ---- */
     if (this.state.selectMode) return;
 
-    const acts = box.createDiv({ cls: 'qm-actions' });
+    /* ---- 右上「···」：复制 / 编辑 / 引用信息 / 定位 / 删除 ---- */
+    this.mountCardMenuButton(head, card);
 
-    // 默认复制正文全文：粘贴即见内容，不依赖块 ID，卡片删掉也不影响
-    const copyText = acts.createSpan({ cls: 'qm-act', text: '复制全文' });
-    copyText.onclick = async (e) => {
+    /* ---- 双击空白处进编辑；整张卡可拖进笔记 ---- */
+    this.bindCardEdit(box, card);
+    this.bindCardDrag(box, card);
+  }
+
+  /* ---------------- 卡片上的交互 ---------------- */
+
+  mountCardMenuButton(head, card) {
+    const more = head.createEl('button', { cls: 'qm-more' });
+    more.setAttr('type', 'button');
+    more.setAttr('aria-label', '更多操作');
+    more.setAttr('title', '更多操作');
+    setIcon(more, 'more-horizontal');
+    // 按下这一下不要被当成「开始拖卡片」，否则菜单还没弹出就先起拖
+    more.addEventListener('mousedown', (e) => e.stopPropagation());
+    more.onclick = (e) => {
       e.stopPropagation();
-      await this.plugin.copy(qmPasteText(card.body));
-      new Notice('已复制卡片全文');
+      this.openCardMenu(card, e);
     };
+    return more;
+  }
 
-    // 复制链接：默认 [[文件#^id]]（可点跳转），设置里可以改回嵌入形式
-    const copyRef = acts.createSpan({ cls: 'qm-act', text: '复制链接' });
-    copyRef.onclick = async (e) => {
-      e.stopPropagation();
-      const hadId = !!card.id && card.idOnLastLine;
-      const id = await this.plugin.ensureId(card);
-      if (!id) {
-        new Notice('没找到这张卡片，请改用「复制全文」');
+  openCardMenu(card, evt) {
+    const menu = new Menu();
+    const info = this.plugin.refSummary(card);
+    const n = info ? info.notes : 0;
+
+    menu.addItem((i) =>
+      i
+        .setTitle('复制全文')
+        .setIcon('copy')
+        .onClick(async () => {
+          await this.plugin.copy(qmPasteText(card.body));
+          new Notice('已复制卡片全文');
+        })
+    );
+    menu.addItem((i) => i.setTitle('复制链接').setIcon('link').onClick(() => this.copyRef(card)));
+    menu.addItem((i) => i.setTitle('编辑').setIcon('pencil').onClick(() => this.requestEdit(card)));
+
+    menu.addSeparator();
+
+    if (!this.plugin.refsReady()) {
+      // 索引还没建好时说清楚，别让人误以为「没被引用过」
+      menu.addItem((i) =>
+        i.setTitle('引用统计准备中…').setIcon('corner-down-right').setDisabled(true)
+      );
+    } else if (n) {
+      const names = info.names.slice(0, 3).join('、') + (info.names.length > 3 ? ' 等' : '');
+      menu.addItem((i) =>
+        i
+          .setTitle('被 ' + n + ' 篇笔记引用 · ' + names)
+          .setIcon('corner-down-right')
+          .setDisabled(true)
+      );
+      menu.addItem((i) =>
+        i
+          .setTitle(this.state.refFilter === 'has' ? '取消「只看已引用」' : '只看被引用的卡片')
+          .setIcon('filter')
+          .onClick(() => this.setRefFilter(this.state.refFilter === 'has' ? '' : 'has'))
+      );
+    } else {
+      menu.addItem((i) =>
+        i.setTitle('还没有笔记引用这张卡片').setIcon('corner-down-right').setDisabled(true)
+      );
+    }
+
+    menu.addItem((i) =>
+      i.setTitle('在文件中定位').setIcon('file-search').onClick(() => this.locateCard(card))
+    );
+
+    menu.addSeparator();
+    menu.addItem((i) => i.setTitle('删除').setIcon('trash-2').onClick(() => this.confirmDelete(card)));
+
+    // 鼠标点：跟着指针；键盘触发：退回到按钮位置
+    if (evt && (evt.clientX || evt.clientY)) {
+      menu.showAtMouseEvent(evt);
+    } else {
+      const el = evt && evt.currentTarget;
+      const r = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+      menu.showAtPosition(r ? { x: r.left - 160, y: r.bottom + 4 } : { x: 120, y: 120 });
+    }
+    return menu;
+  }
+
+  /** 复制块链接：与 1.6 以来一致，跟随「嵌入」开关 */
+  async copyRef(card) {
+    const hadId = !!card.id && card.idOnLastLine;
+    const id = await this.plugin.ensureId(card);
+    if (!id) {
+      new Notice('没找到这张卡片，请改用「复制全文」');
+      return;
+    }
+    const bang = this.plugin.settings.blockRefEmbed ? '!' : '';
+    const ref = bang + '[[' + this.plugin.linkTarget(card) + '#^' + id + ']]';
+    await this.plugin.copy(ref);
+    new Notice((hadId ? '已复制：' : '已为这条卡片补上块 ID，已复制：') + ref, 7000);
+  }
+
+  confirmDelete(card) {
+    new ConfirmModal(
+      this.app,
+      '删除这条卡片？',
+      async () => {
+        await this.plugin.deleteCard(card);
+      },
+      this.refDeleteDetail(card)
+    ).open();
+  }
+
+  /**
+   * 在月份文件里打开这张卡所在的那一行。
+   * 写入前先按块 ID 重新定位，定位不到就不跳（宁可不跳，也别跳到错的地方）。
+   */
+  async locateCard(card) {
+    const file = this.app.vault.getAbstractFileByPath(card.filePath);
+    if (!(file instanceof TFile)) {
+      new Notice('这张卡片所在的文件找不到了');
+      return;
+    }
+
+    let hit = null;
+    try {
+      const text = String((await this.app.vault.read(file)) || '').replace(/\r\n?/g, '\n');
+      hit = qmLocateCard(text, card, { strict: this.plugin.settings.strictCardId !== false });
+    } catch (e) {
+      hit = null;
+    }
+    if (!hit) {
+      new Notice('卡片位置已变化，刷新后再试');
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf(false);
+    if (!leaf || typeof leaf.openFile !== 'function') {
+      new Notice('打不开这个文件');
+      return;
+    }
+    await leaf.openFile(file, { eState: { line: hit.lineIndex } });
+
+    const view = leaf.view;
+    if (view && view.editor) {
+      const from = { line: hit.lineIndex, ch: 0 };
+      const to = { line: hit.lineEnd, ch: 0 };
+      view.editor.setCursor(from);
+      view.editor.scrollIntoView({ from, to }, true);
+    }
+  }
+
+  /**
+   * 进入编辑态的唯一入口（双击与菜单都走这里）。
+   * 同时只允许一处编辑：另一条有未保存的改动时，让用户自己选怎么处理。
+   */
+  requestEdit(card) {
+    const key = this.cardKey(card);
+    const cur = this.state.editingKey;
+    if (cur === key) return;
+    if (!cur) {
+      this.beginEdit(key);
+      return;
+    }
+
+    const prev = this.state.cards.find((c) => this.cardKey(c) === cur);
+    const draft = this.state.editingDraft;
+    const dirty =
+      !!prev && !!draft && draft.key === cur && String(draft.text) !== String(prev.body);
+
+    // 没改动就静默切过去：绝大多数情况只是点错了
+    if (!dirty) {
+      this.beginEdit(key);
+      return;
+    }
+
+    new DraftSwitchModal(this.app, {
+      preview: prev.time + ' ' + qmFirstLine(prev.body),
+      onDiscard: () => this.beginEdit(key),
+      onSave: async () => {
+        if (!String(draft.text || '').trim()) {
+          new Notice('内容不能为空');
+          return false;
+        }
+        this.state.editingKey = null;
+        this.state.editingDraft = null;
+        const saved = await this.plugin.updateCard(prev, draft.text);
+        if (!saved) {
+          // 没写成功就回到原来那条，草稿原样留着
+          this.state.editingKey = cur;
+          this.state.editingDraft = draft;
+          this.renderList();
+          return false;
+        }
+        this.beginEdit(key);
+        return true;
+      },
+    }).open();
+  }
+
+  beginEdit(key) {
+    this.state.editingKey = key;
+    this.state.editingDraft = null;
+    this.renderList();
+  }
+
+  bindCardEdit(box, card) {
+    box.addEventListener('dblclick', (e) => {
+      if (this.state.selectMode) return;
+      const t = e.target;
+      // 链接、标签、「···」保持各自的原生点击语义，不抢双击
+      if (t && typeof t.closest === 'function' && t.closest('a, .qm-tag, .qm-more, .qm-ref, button')) {
         return;
       }
+      if (e.preventDefault) e.preventDefault();
+      this.requestEdit(card);
+    });
+  }
+
+  /**
+   * 整张卡可拖：拖出去的是「指向这张卡的引用」，与复制链接同一份文本。
+   * 只有一处例外——从卡片里的裸网址起手的拖拽交给浏览器，那不是拖卡片。
+   */
+  bindCardDrag(box, card) {
+    box.setAttr('draggable', 'true');
+
+    box.addEventListener('mousedown', () => {
+      const now = Date.now();
+      // 距上一次按下很近：这多半是双击的第二下，那一刻不发起拖拽
+      this._dblRisk = now - (this._lastDown || 0) < 420;
+      this._lastDown = now;
+    });
+
+    box.addEventListener('dragstart', (e) => {
+      if (this._dblRisk || this.state.selectMode || this.state.editingKey) {
+        if (e.preventDefault) e.preventDefault();
+        return;
+      }
+      const t = e.target;
+      if (t && typeof t.closest === 'function' && t.closest('a')) return;
+      if (e.stopPropagation) e.stopPropagation();
+
+      const text = this.dragPayload(card);
+      if (e.dataTransfer) {
+        try {
+          e.dataTransfer.setData('text/plain', text);
+          e.dataTransfer.effectAllowed = 'copy';
+        } catch (err) {
+          /* 极端情况下 setData 会抛（非用户手势），静默即可 */
+        }
+      }
+      box.addClass('is-dragging');
+    });
+
+    box.addEventListener('dragend', () => box.removeClass('is-dragging'));
+  }
+
+  /**
+   * 拖出去的内容。有块 ID 就是引用（跟随「嵌入」开关，与复制链接完全一致）；
+   * 1.5 时代的老卡片没有块 ID，只能退化成正文全文，并提示一次。
+   */
+  dragPayload(card) {
+    if (card.id) {
       const bang = this.plugin.settings.blockRefEmbed ? '!' : '';
-      const ref = bang + '[[' + this.plugin.linkTarget(card) + '#^' + id + ']]';
-      await this.plugin.copy(ref);
-      new Notice((hadId ? '已复制：' : '已为这条卡片补上块 ID，已复制：') + ref, 7000);
-    };
-
-    const edit = acts.createSpan({ cls: 'qm-act', text: '编辑' });
-    edit.onclick = () => {
-      this.state.editingKey = key;
-      this.state.editingDraft = null;
-      this.renderList();
-    };
-
-    const del = acts.createSpan({ cls: 'qm-act is-danger', text: '删除' });
-    del.onclick = () => {
-      new ConfirmModal(
-        this.app,
-        '删除这条卡片？',
-        async () => {
-          await this.plugin.deleteCard(card);
-        },
-        this.refDeleteDetail(card)
-      ).open();
-    };
+      return bang + '[[' + this.plugin.linkTarget(card) + '#^' + card.id + ']]';
+    }
+    if (!this._noIdHint) {
+      this._noIdHint = true;
+      new Notice('这条卡片还没有块 ID，这次拖出去的是正文全文');
+    }
+    return qmPasteText(card.body);
   }
 }
 
@@ -3141,11 +3435,12 @@ class QuickMemoPlugin extends Plugin {
 
   /* ---------------- 改 ---------------- */
 
+  /** 返回是否真的写盘成功：调用方靠它决定要不要退出编辑态（失败时草稿要留着） */
   async updateCard(card, newBody) {
     const bodyLines = qmBodyLines(newBody);
     if (!bodyLines.length) {
       new Notice('内容不能为空');
-      return;
+      return false;
     }
 
     const res = await this.mutateCardFile(card, (lines, hit) => {
@@ -3158,6 +3453,7 @@ class QuickMemoPlugin extends Plugin {
 
     if (res.ok) new Notice('已更新');
     else new Notice('没有修改：' + res.reason);
+    return !!res.ok;
   }
 
   /* ---------------- 删 ---------------- */

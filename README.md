@@ -6,7 +6,7 @@
 
 ![Collis 侧边栏](assets/hero.png)
 
-*侧边栏输入框常驻；`Ctrl+Enter` 存下后成为一张带时间的卡片，右上角显示被几篇笔记引用。*
+*侧边栏输入框常驻；`Ctrl+Enter` 存下后成为一张带时间的卡片，被别的笔记引用时右上角亮起红点。*
 
 ## 它是什么
 
@@ -24,8 +24,8 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 | **多行原样保留** | 换行写成缩进续行 + 硬换行，卡片视图与阅读视图都保持原分行 |
 | **本地纯 Markdown** | 按月一个文件，无私有格式、无自带云同步，卸载插件内容不动 |
 | **全库检索** | 跨所有月份，按标签、日期、时间、短语、关键词筛选且可叠加 |
-| **卡片可用于写作** | 一键复制 `![[文件#^id]]` 嵌入笔记，卡片修改后嵌入处同步 |
-| **被引用次数** | 显示被几篇笔记引用，可筛出已引用/未引用，删除前提示 |
+| **卡片可用于写作** | 卡片拖进笔记即成引用，也可从菜单复制 `![[文件#^id]]`；卡片改动，引用处同步 |
+| **被引用看得见** | 被引用时右上角红点提示，菜单里写明被几篇笔记引用，并能直接跳到引用它的笔记 |
 | **误删可恢复** | 二次确认、9 秒撤销、最近删除 50 条；手写时间行不会被当成卡片 |
 
 ## 功能明细
@@ -62,12 +62,14 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 - 搜索覆盖**所有月份文件**，不只当月
 - 关键词、标签、日期、引用状态可叠加，叠加条件会在搜索框下方明示
 - 日期标题可折叠，折叠状态记在设置里，重启后保留
-- 「引用」按钮在 全部 → 已引用 → 未引用 之间循环，配合被引用次数使用
+- 「引用」按钮在 全部 → 已引用 → 未引用 之间循环，可与右上角红点对照
 
 ### 编辑与删除
 
-- **内联编辑**：点「编辑」原地改，多行内容按行数自动展开，`Ctrl+Enter` 保存、`Esc` 取消
-- **删除**：二次确认后删除整张卡片（含所有续行）；被引用的卡片会先提示被几篇笔记引用
+- **双击即改**：双击卡片原地进入编辑，多行内容按行数自动展开，`Ctrl+Enter` 保存、`Esc` 取消；手机上双击同样有效
+- **一次只改一张**：正在改一张时双击另一张，会先问「保存并继续 / 放弃修改 / 留在这条」，既不丢内容也不同时开两处编辑
+- **右上「···」菜单**：复制全文、复制链接、编辑、被几篇笔记引用、在文件中定位、只看被引用的卡片、删除都收在这里，平时不占版面
+- **删除**：菜单里二次确认后删除整张卡片（含所有续行）；被引用的卡片会先提示被几篇笔记引用
 - **批量删除**：进入选择模式勾选多条，跨月份的一次处理完
 - **撤销**：删除后 9 秒内可点提示条撤销；「最近删除」保留最近 50 条，可逐条恢复或清空
 - **空标题清理**：某天卡片删空后，`## 日期` 标题一并移除；在编辑器里手删同样生效，光标所在日期段暂不处理
@@ -77,12 +79,15 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 
 ![把卡片嵌入笔记](assets/flow.png)
 
-*复制链接得到 `![[2026-11#^a1b2c3]]`，粘进笔记即嵌入；原卡片修改后，嵌入处同步更新。*
+*复制链接或把卡片直接拖进笔记，得到 `![[2026-11#^a1b2c3]]`；原卡片修改后，嵌入处同步更新。*
 
+- **拖进笔记即引用**：按住卡片任意位置（不用找把手）拖到正在写的笔记里松手，落下的就是引用（与「复制链接」同一串），原卡片不受影响
 - **复制全文**：卡片正文连换行、标签一并复制为纯文本，粘贴即见内容；不依赖块 ID，原卡片以后删掉，粘出去的文字也还在
 - **复制链接**：默认 `[[2026-11#^a1b2c3]]`（点击跳转），可在设置里改为 `![[2026-11#^a1b2c3]]`（直接嵌入）；卡片没有块 ID 时会自动补上
-- **被引用次数**：数字来自仓库里真实的 `[[文件#^id]]` / `![[文件#^id]]` 链接；同一篇笔记引多次只算一篇，速记内部卡片互引不算，0 次不显示
+- **被引用提示**：右上角小红点表示这张卡片被其他笔记引用过；「···」菜单里写明被几篇笔记引用，点一下跳到第一篇引用它的笔记
+- **在文件中定位**：菜单里直接打开卡片所在的月份文件并选中那一行，不用自己翻
 - **网址可点**：正文里的 `https://…` 点击直接用浏览器打开，长网址原位折行；`[[双链]]` 与 Markdown 语法不做解析，卡片内始终是纯文本
+- **要选一段文字**：整张卡片可拖，所以想在卡内选中局部文字时，双击进编辑态再选
 
 ## 数据格式
 
@@ -151,8 +156,8 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 | **Multi-line kept intact** | Continuation lines are stored as indented lines with hard breaks, preserved in the card view and the reading view |
 | **Plain Markdown, no lock-in** | One file per month, no private format, no own sync; any editor can open it, removing the plugin leaves your notes untouched |
 | **Search across everything** | Every monthly file, filterable by tag, date, time, phrase or keyword, combinable |
-| **Cards usable in writing** | Copy `![[2026-11#^a1b2c3]]` into any note; edit the card and the embed follows |
-| **Citation count** | Each card shows how many notes link to it; filter to cited or uncited cards; warned before deleting a cited one |
+| **Cards usable in writing** | Drag a card into any note to cite it, or copy `![[2026-11#^a1b2c3]]` from the menu; edit the card and every reference follows |
+| **References you can see** | A small dot marks a cited card; the menu states how many notes cite it and jumps straight to them |
 | **Deletion is reversible** | Confirmation, 9-second undo, last 50 deletions kept; only entries with a block ID count as cards |
 
 ### Capture
@@ -174,15 +179,15 @@ Native `#tag` and nested `#parent/child`, children grouped under their parent. T
 | a time | `13:41` |
 | a sentence | `"a whole phrase"` |
 
-Space-separated words must all match. Days collapse, and the collapsed state persists. The "Refs" button cycles all → cited → uncited.
+Space-separated words must all match. Days collapse, and the collapsed state persists. The "Refs" button cycles all → cited → uncited, matching the dots on the cards.
 
 ### Edit and delete
 
-Inline editing (`Ctrl+Enter` saves, `Esc` cancels), batch delete across months, 9-second undo, last 50 deletions kept, empty `## date` headings cleaned up automatically. Strict card detection means a hand-typed `- 12:30 standup` is never treated as a card.
+Double-click a card to edit it in place (`Ctrl+Enter` saves, `Esc` cancels) — works on mobile too. Double-clicking another card while editing asks whether to save and continue, discard, or stay, so text is never lost and two edits never run at once. Everything else — copy as text, copy the link, edit, how many notes cite it, reveal it in its file, delete — sits in the `···` menu at the card's top right. Batch delete across months, 9-second undo, last 50 deletions kept, empty `## date` headings cleaned up automatically. Strict card detection means a hand-typed `- 12:30 standup` is never treated as a card.
 
 ### Copy and cite
 
-Copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). Citation counts come from real links in your vault; several links from one note count once, and links between cards of the same file are ignored. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
+Drag any part of a card into a note to drop a reference — no handle to aim at — or copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). A dot at the card's top right means other notes cite it; the menu says how many and jumps to the first one. "Reveal in file" opens the month file with the line selected. If you need to select part of the card's text, double-click to enter editing first. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
 
 ### Data
 
