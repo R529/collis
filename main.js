@@ -19,6 +19,112 @@ const {
 
 const VIEW_TYPE_QM = 'qm-cards-view';
 
+/** 标签窗口的默认高度（跟 styles.css 里 .qm-tagtree 的 height 保持一致） */
+const QM_TREE_H = 252;
+
+/* ------------------------------------------------------------------ */
+/* 侧栏内联图标                                                        */
+/* ------------------------------------------------------------------ */
+/* 直接照抄原型里的 SVG。内置 Lucide 的 filter 是漏斗、clock 是表盘，
+   形状跟原型（三条渐短的横线 / 带回环的钟）不一样，套上去就不是同一个界面了。 */
+
+const QM_ICONS = {
+  // 搜索：放大镜
+  search:
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>',
+  // 回看：带回环的钟
+  review:
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4.3l2.8 1.7"/></svg>',
+  // 筛选：三条渐短的横线
+  filter:
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h16"/><path d="M7 12h10"/><path d="M10 17h4"/></svg>',
+  // 更多：三个点
+  more:
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>',
+  // 返回
+  back:
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
+};
+
+/** 往元素里塞一个原型同款图标 */
+/**
+ * 下拉菜单的落点：贴着触发按钮、右边缘对齐，下面放不下就翻到上面。
+ * 坐标都相对 .qm-root（菜单的定位容器），所以侧栏滚动 / 缩放都不影响。
+ */
+function qmMenuPlace(anchor, root, w, h) {
+  const rootW = root.width || 0;
+  const rootH = root.height || 0;
+  let left = anchor.right - root.left - w;
+  const maxLeft = rootW ? Math.max(6, rootW - w - 6) : left;
+  left = Math.max(6, Math.min(left, maxLeft));
+  let top = anchor.bottom - root.top + 6;
+  if (rootH && top + h > rootH - 6) {
+    const above = anchor.top - root.top - h - 6;
+    top = above >= 6 ? above : Math.max(6, rootH - h - 6);
+  }
+  return { left: Math.round(left), top: Math.round(top) };
+}
+
+/**
+ * 底部多选浮条离视图底边多远。
+ * Obsidian 的状态栏（反链数 / 字数）是盖在工作区底部的浮层，侧栏视图的底边正好
+ * 压在它下面；浮条按默认 10px 落下去就会和那串字叠在一起。重叠多少就往上抬多少。
+ * 纯函数，量到的两个坐标都是 getBoundingClientRect 的 bottom / top。
+ */
+function qmSelbarGap(viewBottom, statusTop, base) {
+  const fallback = typeof base === 'number' ? base : 10;
+  if (typeof viewBottom !== 'number' || typeof statusTop !== 'number') return fallback;
+  const overlap = Math.round(viewBottom - statusTop);
+  if (overlap <= 0) return fallback;
+  return overlap + 6;
+}
+
+/**
+ * 状态栏压住了视图底部多少像素。
+ * 状态栏是浮在工作区上面的，视图底边在它下面；列表和回看的最后一条会被它盖住，
+ * 底部留白要按这个数补，不能写死。没盖住就是 0。
+ */
+function qmStatusCover(viewBottom, statusTop) {
+  if (typeof viewBottom !== 'number' || typeof statusTop !== 'number') return 0;
+  const overlap = Math.round(viewBottom - statusTop);
+  return overlap > 0 ? overlap : 0;
+}
+
+/**
+ * 这段文本里有没有引用这块卡片（`#^id` / `[[文件#^id]]`）。
+ * 插入前用它判重：回看里换一批后同一张会再出现，不查就会插出两三行一样的。
+ */
+function qmHasBlockRef(text, id) {
+  if (!text || !id) return false;
+  try {
+    const esc = String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('\\^' + esc + '(?![A-Za-z0-9-])').test(String(text));
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 回看一次翻几张 */
+const QM_REVIEW_N = 5;
+
+/** 洗牌（不改原数组） */
+function qmShuffle(list) {
+  const a = (list || []).slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+
+function qmIcon(parent, name) {
+  if (!parent || !QM_ICONS[name]) return;
+  parent.innerHTML = QM_ICONS[name];
+}
+
+
 /* ------------------------------------------------------------------ */
 /* 侧栏 / 标签页图标：一颗四芒星加一条拖尾（流星）                     */
 /* ------------------------------------------------------------------ */
@@ -1057,17 +1163,21 @@ class TagSuggest {
 /* ------------------------------------------------------------------ */
 
 class ConfirmModal extends Modal {
-  constructor(app, text, onConfirm, detail) {
+  constructor(app, text, onConfirm, detail, confirmText) {
     super(app);
     this.text = text;
     this.onConfirm = onConfirm;
     // 可选：补充说明（比如「这张卡还被 2 篇笔记引用」）
     this.detail = detail || '';
+    // 可选：确认按钮的文案（删除 / 清空 …）
+    this.confirmText = confirmText || '删除';
   }
 
   onOpen() {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     contentEl.empty();
+    // 弹窗不在 .qm-view 里，得挂这个类才拿得到 --qm-* 令牌（否则主按钮白字不可见）
+    if (modalEl && modalEl.addClass) modalEl.addClass('qm-modal');
     contentEl.createEl('div', { text: this.text, cls: 'qm-confirm-text' });
     if (this.detail) {
       contentEl.createEl('div', { text: this.detail, cls: 'qm-confirm-detail' });
@@ -1078,7 +1188,7 @@ class ConfirmModal extends Modal {
     const cancel = bar.createEl('button', { text: '取消', cls: 'qm-mini-btn' });
     cancel.onclick = () => this.close();
 
-    const ok = bar.createEl('button', { text: '删除', cls: 'qm-mini-btn is-primary' });
+    const ok = bar.createEl('button', { text: this.confirmText, cls: 'qm-mini-btn is-primary' });
     ok.onclick = () => {
       this.close();
       this.onConfirm();
@@ -1102,8 +1212,9 @@ class DraftSwitchModal extends Modal {
   }
 
   onOpen() {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     contentEl.empty();
+    if (modalEl && modalEl.addClass) modalEl.addClass('qm-modal');
     contentEl.createEl('div', { text: '另一条卡片还没保存', cls: 'qm-confirm-text' });
     contentEl.createEl('div', {
       text:
@@ -1208,13 +1319,14 @@ class CardPickerModal extends SuggestModal {
     if (this._chosen) return;
     this._chosen = true;
 
-    const ed = this.opts.editor || this.plugin.currentEditor();
-    if (!ed) {
-      new Notice('先打开一篇笔记，再插入卡片');
-      return;
-    }
     // Shift+回车：插入纯文本（只想抄原话，不想建链接）
     const plain = !!(evt && evt.shiftKey);
+    const ed = this.opts.editor || this.plugin.currentEditor();
+    if (!ed) {
+      // 阅读视图 / 光标已经不在了：走统一入口，追加到这篇末尾，别只丢一句提示
+      void this.plugin.insertIntoCurrentNote(item.card, plain);
+      return;
+    }
     this.plugin.insertCardRef(item.card, ed, this.opts.from, this.opts.to, plain);
   }
 
@@ -1326,50 +1438,83 @@ class TrashModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
+    // 回收站比普通确认框宽一点，长句子不用挤成两行
+    if (this.modalEl && this.modalEl.addClass) this.modalEl.addClass('qm-trash-modal');
     contentEl.createEl('div', { text: '最近删除', cls: 'qm-modal-title' });
 
     const list = Array.isArray(this.plugin.settings.trash) ? this.plugin.settings.trash : [];
 
     if (!list.length) {
-      contentEl.createEl('div', { text: '还没有删除过卡片。', cls: 'qm-hint' });
+      contentEl.createEl('div', { text: '最近没有删除过卡片。', cls: 'qm-hint' });
     } else {
       contentEl.createEl('div', {
-        text: '恢复会按日期和时间插回原文件，只做插入，不会覆盖其它内容。最多保留 50 条（批量删除时一次可能进来多条）。',
+        text: '保留最近 50 条。恢复会按原日期插回；删除是彻底删掉，不能撤销。',
         cls: 'qm-hint',
       });
 
       const wrap = contentEl.createDiv({ cls: 'qm-trash-list' });
       for (const it of list) {
         const row = wrap.createDiv({ cls: 'qm-trash-item' });
-        row.createDiv({
+
+        const main = row.createDiv({ cls: 'qm-trash-main' });
+        const txt = String(it.body || '').replace(/\s*\n\s*/g, ' ⏎ ');
+        main.createDiv({ cls: 'qm-trash-body', text: txt || '（空）' });
+        main.createDiv({
           cls: 'qm-trash-meta',
           text: (it.date || '未分组') + ' ' + (it.time || ''),
         });
-        const txt = String(it.body || '').replace(/\s*\n\s*/g, ' ⏎ ');
-        row.createDiv({ cls: 'qm-trash-body', text: txt || '（空）' });
 
         const acts = row.createDiv({ cls: 'qm-trash-acts' });
+
+        // 恢复：按原日期和时间插回原文件
         const undo = acts.createEl('button', { text: '恢复', cls: 'qm-mini-btn is-primary' });
         undo.onclick = async () => {
           await this.plugin.restoreTrash(it.uid);
           this.onOpen();
         };
-        const drop = acts.createEl('button', { text: '丢弃', cls: 'qm-mini-btn' });
-        drop.onclick = async () => {
-          await this.plugin.dropTrash(it.uid);
-          this.onOpen();
+
+        // 单条彻底删除：先问一句，删掉就找不回来了
+        const drop = acts.createEl('button', {
+          text: '删除',
+          cls: 'qm-mini-btn qm-mini-btn-danger',
+        });
+        drop.setAttr('title', '彻底删除这一条');
+        drop.onclick = () => {
+          new ConfirmModal(
+            this.app,
+            '彻底删除这一条？',
+            async () => {
+              await this.plugin.dropTrash(it.uid);
+              this.onOpen();
+            },
+            '删除后就真的没了，不能恢复。',
+            '删除'
+          ).open();
         };
       }
     }
 
-    const bar = contentEl.createDiv({ cls: 'qm-edit-bar' });
+    const bar = contentEl.createDiv({ cls: 'qm-trash-bar' });
     if (list.length) {
-      const clear = bar.createEl('button', { text: '清空', cls: 'qm-mini-btn' });
-      clear.onclick = async () => {
-        await this.plugin.clearTrash();
-        this.onOpen();
+      // 一键清空：一次删完整个最近删除，一样要确认
+      const clear = bar.createEl('button', {
+        text: '清空全部 ' + list.length + ' 条',
+        cls: 'qm-mini-btn qm-mini-btn-danger qm-trash-clear',
+      });
+      clear.onclick = () => {
+        new ConfirmModal(
+          this.app,
+          '清空最近删除里的 ' + list.length + ' 条？',
+          async () => {
+            await this.plugin.clearTrash();
+            this.onOpen();
+          },
+          '清空后这些内容就真的没了，不能恢复。',
+          '清空'
+        ).open();
       };
     }
+
     const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
     close.onclick = () => this.close();
   }
@@ -1390,8 +1535,9 @@ class CaptureModal extends Modal {
   }
 
   onOpen() {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     contentEl.empty();
+    if (modalEl && modalEl.addClass) modalEl.addClass('qm-modal');
     contentEl.createEl('div', { text: '记一条', cls: 'qm-modal-title' });
 
     const taWrap = contentEl.createDiv({ cls: 'qm-modal-wrap' });
@@ -1549,12 +1695,12 @@ function qmPickLabel(freq) {
 }
 
 /**
- * 一次遍历建立标签树（只有两层：顶层组 + 组内子路径）。
- * 计数单一真相源：节点 cards 集合 = 该前缀及其所有后代的卡片（按卡去重）。
- * 因此「显示的数字」永远等于「点进去的条数」。
+ * 任意层级的标签森林：父节点计数 = 该前缀 + 所有后代的卡片（按卡去重），
+ * 所以「树上写的数字」永远等于「点下去看到的条数」。
+ * 递归到底：筛选面板里任意层级的标签都能展开、都能筛。
  */
-function qmBuildTagTree(cards) {
-  const index = new Map();   // lowerPath -> { key, segs, labelFreq, cards:Set<cardIndex> }
+function qmBuildTagForest(cards) {
+  const index = new Map();
   const list = cards || [];
   let untagged = 0;
 
@@ -1564,49 +1710,74 @@ function qmBuildTagTree(cards) {
     let hasTag = false;
     for (const t of card.tags || []) {
       const segs = qmSegs(t);
-      if (!segs.length) continue;          // 脏标签（"/"、"//"、空白、null）不产生节点
+      if (!segs.length) continue;
       hasTag = true;
       for (let d = 1; d <= segs.length; d++) {
         const part = segs.slice(0, d);
         const key = part.map((x) => x.toLowerCase()).join(QM_TAG_SEP);
         let node = index.get(key);
         if (!node) {
-          node = { key, segs: part, labelFreq: new Map(), cards: new Set() };
+          node = { key, labelFreq: new Map(), cards: new Set() };
           index.set(key, node);
         }
         const label = part.join(QM_TAG_SEP);
         node.labelFreq.set(label, (node.labelFreq.get(label) || 0) + 1);
-        if (!seen.has(key)) { node.cards.add(i); seen.add(key); }
+        if (!seen.has(key)) {
+          node.cards.add(i);
+          seen.add(key);
+        }
       }
     }
     if (!hasTag) untagged++;
   }
 
-  const groups = [];
-  const byKey = new Map();
-  for (const node of index.values()) {
-    if (node.segs.length !== 1) continue;
-    const label = qmPickLabel(node.labelFreq);
-    const g = { key: node.key, path: label, label, count: node.cards.size, children: [] };
-    byKey.set(node.key, g);
-    groups.push(g);
-  }
-  for (const node of index.values()) {
-    if (node.segs.length < 2) continue;
-    const g = byKey.get(node.segs[0].toLowerCase());
-    if (!g) continue;
-    g.children.push({
-      path: node.segs.join(QM_TAG_SEP),
-      label: node.segs.slice(1).join(QM_TAG_SEP),
-      count: node.cards.size,
+  const nodes = new Map();
+  for (const [key, n] of index) {
+    const path = qmPickLabel(n.labelFreq);
+    nodes.set(key, {
+      key,
+      path,
+      label: qmSegs(path).slice(-1)[0] || path,
+      count: n.cards.size,
+      children: [],
     });
   }
-  for (const g of groups) {
-    g.children.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
-  }
-  groups.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
 
-  return { untagged, groups };
+  const roots = [];
+  for (const [key, node] of nodes) {
+    const cut = key.lastIndexOf(QM_TAG_SEP);
+    const parent = cut < 0 ? null : nodes.get(key.slice(0, cut));
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+
+  const sortNodes = (arr) => {
+    arr.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
+    for (const n of arr) sortNodes(n.children);
+  };
+  sortNodes(roots);
+
+  return { tree: roots, untagged };
+}
+
+/** 后代节点个数（chips 上的「含 N」，表示这个父标签下面还有几个子标签） */
+function qmCountTagDescendants(node) {
+  let n = 0;
+  for (const ch of (node && node.children) || []) {
+    n += 1 + qmCountTagDescendants(ch);
+  }
+  return n;
+}
+
+/** 相对今天的天数差（只按日期算，不看时间） */
+function qmDaysAgo(date) {
+  const m = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const then = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  then.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((today - then) / 86400000));
 }
 
 /** 卡片是否命中某个路径（从根开始逐段前缀匹配，兼容嵌套标签） */
@@ -1647,19 +1818,34 @@ class CardsView extends ItemView {
     this.plugin = plugin;
     this.state = {
       search: '',
-      activeTag: '',
+      // 标签筛选：多选，取并集（存完整路径，保留原始大小写）
+      tags: [],
+      // 「无标签」筛选：与标签多选互斥
+      untagged: false,
       // 引用筛选：'' 全部 / 'has' 只看已引用 / 'none' 只看未引用
       refFilter: '',
+      // 筛选浮层是否展开
+      filterOpen: false,
+      // 标签树的展开状态（按小写路径记）
+      expanded: {},
       editingKey: null,
       // 正在编辑但还没保存的文本：列表被重画时用它恢复，避免白打一遍
       editingDraft: null,
       cards: [],
-      tagbarExpanded: false,
       // 折叠的日期（只影响渲染，不改文件）
       collapsed: new Set((plugin.settings && plugin.settings.collapsedDates) || []),
       // 多选删除
       selectMode: false,
       selected: new Set(),
+      // 回看：覆盖式视图，只在内存里
+      reviewOpen: false,
+      review: [],
+      // 目标笔记里已有的块 ID：「已插入」以笔记内容为准，不是「这一轮点过没有」
+      insertedIds: new Set(),
+      // 这一轮展示过哪些卡：换一批时尽量不重样
+      reviewShown: new Set(),
+      // 只给没有块 ID 的老卡用（没法从内容判断，只能记这一轮）
+      reviewDone: {},
     };
 
     // 拖拽与双击的判定状态（不参与渲染，只在一张卡的交互里用）
@@ -1667,10 +1853,6 @@ class CardsView extends ItemView {
     this._dblRisk = false; // 这一次按下是否紧跟着上一次（视为双击的第二下）
     this._noIdHint = false; // 「没有块 ID，拖的是全文」只提示一次
     this._refBadges = new Map();
-  }
-
-  get NO_TAG() {
-    return '__qm_none__';
   }
 
   getViewType() {
@@ -1691,17 +1873,23 @@ class CardsView extends ItemView {
     root.addClass('qm-view');
 
     const wrap = root.createDiv({ cls: 'qm-root' });
+    // 浮层（筛选 / 多选条）都以它为定位基准，少了这一行面板会跑到侧栏顶部去
+    this.wrapEl = wrap;
 
-    /* ---- 输入区 ---- */
-    const inputWrap = wrap.createDiv({ cls: 'qm-input-wrap' });
-    this.inputEl = inputWrap.createEl('textarea', { cls: 'qm-input' });
-    this.inputEl.setAttr('placeholder', '记录一下…（Enter 换行 · Ctrl+Enter 记下）');
+    /* ---- 第一层：输入块 ---- */
+    const composer = wrap.createDiv({ cls: 'qm-composer' });
+    this.inputEl = composer.createEl('textarea', { cls: 'qm-input' });
+    this.inputEl.setAttr('placeholder', '记录一下…');
     this.inputEl.rows = 2;
 
-    // 多行输入时跟随内容长高（上限与 CSS 的 200px 一致）
+    // 多行输入时跟随内容长高（上限与 CSS 的 max-height 一致）；
+    // 但用户自己拖过高度之后就不再自动改，免得一敲字就弹回原样。
+    this._manualH = false;
     this.autoGrow = () => {
-      this.inputEl.style.height = 'auto';
-      this.inputEl.style.height = Math.min(200, this.inputEl.scrollHeight) + 'px';
+      if (this._manualH) return;
+      const el = this.inputEl;
+      el.style.height = 'auto';
+      el.style.height = Math.min(160, el.scrollHeight) + 'px';
     };
 
     // 上次没记完的内容：填回来，下面留一行说明。不设「丢弃」按钮——
@@ -1714,23 +1902,83 @@ class CardsView extends ItemView {
       this.inputEl.value = draft;
       this._draftRestored = true;
       this.autoGrow();
-      this.draftHintEl = inputWrap.createDiv({
+      this.draftHintEl = composer.createDiv({
         cls: 'qm-draft-hint',
         text: '已恢复上次没记完的内容',
       });
     }
 
+    // 输入块底部：左边快捷键提示，右边「记下」
+    const compFoot = composer.createDiv({ cls: 'qm-composer-foot' });
+    compFoot.createSpan({ cls: 'qm-kbd-hint', text: 'Ctrl+Enter 记下' });
+    this.saveBtnEl = compFoot.createEl('button', { cls: 'qm-save', text: '记下' });
+    this.saveBtnEl.onclick = () => this.saveInput();
+
+    /* ---- 输入块右下角：手动拉高手柄（原型没有，但固定高度不好用） ---- */
+    const grip = composer.createDiv({ cls: 'qm-grip' });
+    grip.setAttr('title', '上下拖动，调整输入框高度（双击还原）');
+    grip.setAttr('aria-label', '调整输入框高度');
+    grip.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M10 3 3 10"/><path d="M10 6.4 6.4 10"/></svg>';
+
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._manualH = true;
+      const startY = e.clientY;
+      const startH = this.inputEl.offsetHeight || 38;
+      const doc = (this.inputEl.ownerDocument || document);
+      // 抓住指针：不抓的话拖到窗口外松手收不到 pointerup，监听会一直挂着，
+      // 下次再拖就是两个 onMove 同时改高度（手感变成跳着走）
+      try {
+        if (grip.setPointerCapture && e.pointerId != null) grip.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* 老环境不支持就算了，下面还有 pointercancel 兜底 */
+      }
+      const onMove = (ev) => {
+        const h = Math.max(38, Math.min(400, startH + (ev.clientY - startY)));
+        this.inputEl.style.height = h + 'px';
+      };
+      const stop = () => {
+        doc.removeEventListener('pointermove', onMove);
+        doc.removeEventListener('pointerup', stop);
+        doc.removeEventListener('pointercancel', stop);
+        try {
+          if (grip.releasePointerCapture && e.pointerId != null) grip.releasePointerCapture(e.pointerId);
+        } catch (err) {
+          /* 已经没了 */
+        }
+      };
+      doc.addEventListener('pointermove', onMove);
+      doc.addEventListener('pointerup', stop);
+      doc.addEventListener('pointercancel', stop);
+    });
+    // 双击手柄 = 回到「跟着内容长高」
+    grip.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      this._manualH = false;
+      this.inputEl.style.height = '';
+      this.autoGrow();
+    });
+
+    // 空输入时按钮压暗并禁用，跟原型一致
+    this.syncSaveBtn = () => {
+      if (!this.saveBtnEl) return;
+      const empty = !String(this.inputEl.value || '').trim();
+      this.saveBtnEl.disabled = empty;
+      this.saveBtnEl.toggleClass('is-disabled', empty);
+    };
+    this.syncSaveBtn();
+
     this.inputEl.addEventListener('input', () => {
       this.autoGrow();
       this.dismissDraftHint();
+      this.syncSaveBtn();
       this.plugin.queueDraft(this.inputEl.value);
     });
 
-    this.tagSuggest = new TagSuggest(this.inputEl, inputWrap, () => this.tagPool());
-
-    const toolbar = inputWrap.createDiv({ cls: 'qm-toolbar' });
-    const saveBtn = toolbar.createEl('button', { text: '记下', cls: 'qm-save' });
-    saveBtn.onclick = () => this.saveInput();
+    this.tagSuggest = new TagSuggest(this.inputEl, composer, () => this.tagPool());
 
     this.inputEl.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -1739,14 +1987,24 @@ class CardsView extends ItemView {
       }
     });
 
-    /* ---- 筛选区 ---- */
-    const filter = wrap.createDiv({ cls: 'qm-filter' });
-    const searchRow = filter.createDiv({ cls: 'qm-search-row' });
+    /* ---- 第二层：工具行（也是最后一层） ---- */
+    const toolrow = wrap.createDiv({ cls: 'qm-toolrow' });
+    this.toolRowEl = toolrow;
 
-    this.searchEl = searchRow.createEl('input', { cls: 'qm-search' });
+    const searchbox = toolrow.createDiv({ cls: 'qm-searchbox' });
+    const sIco = searchbox.createSpan({ cls: 'qm-search-ico' });
+    qmIcon(sIco, 'search');
+
+    this.searchEl = searchbox.createEl('input', { cls: 'qm-search' });
     this.searchEl.setAttr('type', 'text');
-    this.searchEl.setAttr('placeholder', '搜索全文 · #标签 · 2026-11-07 · 13:41');
+    this.searchEl.setAttr('placeholder', '搜索卡片、#标签、日期');
+    this.syncSearchClear = () => {
+      if (!this.searchClearEl) return;
+      this.searchClearEl.toggleClass('is-visible', !!String(this.searchEl.value || '').trim());
+    };
+
     this.searchEl.addEventListener('input', () => {
+      this.syncSearchClear();
       // 每敲一个字都全量重算是主要的卡顿来源，这里合并成一次
       if (this._searchTimer) clearTimeout(this._searchTimer);
       this._searchTimer = setTimeout(() => {
@@ -1754,48 +2012,105 @@ class CardsView extends ItemView {
         this.state.search = this.searchEl.value.trim();
         // 换了搜索条件，旧勾选可能已经不在结果里，清掉更安全
         if (this.state.selectMode) this.state.selected.clear();
+        // 搜索也算一条生效条件，chips 与漏斗的小圆点都要跟着变
+        this.renderChips();
+        this.renderFilterBtnState();
         this.renderList();
       }, 120);
     });
 
-    this.selectBtnEl = searchRow.createEl('button', {
-      cls: 'qm-select-toggle',
-      text: '选择',
+    this.searchClearEl = searchbox.createEl('button', {
+      cls: 'qm-search-clear',
+      text: '\u00d7',
     });
-    this.selectBtnEl.onclick = () => this.toggleSelectMode();
+    this.searchClearEl.setAttr('aria-label', '清空搜索');
+    this.searchClearEl.onclick = () => {
+      this.searchEl.value = '';
+      this.state.search = '';
+      this.syncSearchClear();
+      if (this.state.selectMode) this.state.selected.clear();
+      this.renderChips();
+      this.renderFilterBtnState();
+      this.renderList();
+      this.searchEl.focus();
+    };
 
-    // 引用筛选：全部 → 已引用 → 未引用，循环切换
-    this.refBtnEl = searchRow.createEl('button', {
-      cls: 'qm-select-toggle qm-ref-toggle',
-      text: '引用',
-    });
-    this.refBtnEl.setAttr('aria-label', '按引用情况筛选：全部 / 已引用 / 未引用');
-    this.refBtnEl.onclick = () => this.cycleRefFilter();
+    const reviewBtn = toolrow.createEl('button', { cls: 'qm-icon-btn' });
+    reviewBtn.setAttr('type', 'button');
+    reviewBtn.setAttr('aria-label', '回看');
+    reviewBtn.setAttr('title', '回看（翻几张旧卡片）');
+    qmIcon(reviewBtn, 'review');
+    reviewBtn.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      this.openReview();
+    };
 
-    // 搜索与标签筛选同时生效时，把「作用域」写在明面上，避免以为卡片丢了
-    this.scopeEl = filter.createDiv({ cls: 'qm-scope is-hidden' });
+    this.filterBtnEl = toolrow.createEl('button', { cls: 'qm-icon-btn' });
+    this.filterBtnEl.setAttr('type', 'button');
+    this.filterBtnEl.setAttr('aria-label', '筛选');
+    this.filterBtnEl.setAttr('title', '筛选');
+    qmIcon(this.filterBtnEl, 'filter');
+    // 有生效条件时右下角点一个小圆点（不是数字，不抢视线）
+    this.filterDotEl = this.filterBtnEl.createSpan({ cls: 'qm-filter-dot is-hidden' });
+    this.filterBtnEl.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      this.toggleFilterPanel();
+    };
 
-    this.tagbarEl = filter.createDiv({ cls: 'qm-tagbar' });
+    this.moreBtnEl = toolrow.createEl('button', { cls: 'qm-icon-btn' });
+    this.moreBtnEl.setAttr('type', 'button');
+    this.moreBtnEl.setAttr('aria-label', '更多');
+    this.moreBtnEl.setAttr('title', '更多');
+    qmIcon(this.moreBtnEl, 'more');
+    this.moreBtnEl.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      this.openMoreMenu(e);
+    };
+
+    /* ---- 筛选浮层：不占列表高度，盖在列表上面 ---- */
+    this.popEl = wrap.createDiv({ cls: 'qm-pop' });
+
+    /* ---- 生效条件 chips ---- */
+    this.chipsEl = wrap.createDiv({ cls: 'qm-chips' });
 
     /* ---- 列表区 ---- */
     this.listEl = wrap.createDiv({ cls: 'qm-list' });
 
-    /* ---- 多选操作条 ---- */
-    this.selectBarEl = wrap.createDiv({ cls: 'qm-selectbar is-hidden' });
-    this.delSelBtnEl = this.selectBarEl.createEl('button', {
-      cls: 'qm-mini-btn is-danger',
-      text: '删除所选',
-    });
-    this.delSelBtnEl.onclick = () => this.deleteSelected();
+    /* ---- 多选浮条：只在多选时浮出来，常态底部什么都不留 ---- */
+    this.selectBarEl = wrap.createDiv({ cls: 'qm-selbar' });
 
-    /* ---- 底部栏 ---- */
-    const footer = wrap.createDiv({ cls: 'qm-footer' });
-    this.footerInfoEl = footer.createSpan({ cls: 'qm-footer-info', text: '' });
-    const right = footer.createDiv({ cls: 'qm-footer-right' });
-    this.trashEl = right.createSpan({ cls: 'qm-open-file qm-trash-open', text: '' });
-    this.trashEl.onclick = () => new TrashModal(this.app, this.plugin).open();
-    const openFile = right.createSpan({ cls: 'qm-open-file', text: '打开本月文件' });
-    openFile.onclick = () => this.plugin.openCurrentMonthFile();
+    /* ---- 回看：覆盖式视图，输入区主动让位 ---- */
+    this.reviewEl = wrap.createDiv({ cls: 'qm-review' });
+
+    // 点「筛选」以外的地方把浮层收起来
+    this._onDocDown = (e) => {
+      if (!this.state || !this.state.filterOpen) return;
+      const t = e.target;
+      // 面板重绘后 target 已经脱离文档，这是点面板内部，直接忽略
+      if (t && t.isConnected === false) return;
+      if (t && typeof t.closest === 'function' && t.closest('.qm-pop')) return;
+      // 筛选按钮自己的这一下交给 onclick 去开/关，别在这里先关一次
+      if (t && this.filterBtnEl && typeof this.filterBtnEl.contains === 'function') {
+        if (t === this.filterBtnEl || this.filterBtnEl.contains(t)) return;
+      }
+      this.closeFilterPanel();
+    };
+    document.addEventListener('mousedown', this._onDocDown, true);
+
+    // 窗口/侧栏高度变了，底部留白和浮条要的距离也得跟着变
+    this.registerDomEvent(window, 'resize', () => {
+      this.syncSelbarGap();
+    });
+    // 拖侧栏分隔条不会触发 resize，要单独盯住自己的盒子
+    try {
+      if (typeof ResizeObserver === 'function' && this.wrapEl) {
+        const ro = new ResizeObserver(() => this.syncSelbarGap());
+        ro.observe(this.wrapEl);
+        this.register(() => ro.disconnect());
+      }
+    } catch (e) {
+      /* 没有 ResizeObserver 就只靠 resize */
+    }
 
     const onChange = async (f, oldPath) => {
       if (!(f instanceof TFile)) return;
@@ -1814,9 +2129,22 @@ class CardsView extends ItemView {
     this.registerEvent(this.app.vault.on('rename', onChange));
 
     await this.refresh();
+    // 状态栏压住底部多少，写进 --qm-status-h；列表和回看的底部留白都靠它
+    this.syncSelbarGap();
   }
 
   async onClose() {
+    // 菜单开着直接关侧栏的话，挂在 document / 列表上的监听会留下来，
+    // 闭包还钉着整个视图（含全部卡片），这里必须先收掉
+    try {
+      this.closeMenu();
+    } catch (e) {
+      /* 没开菜单 */
+    }
+    if (this._onDocDown) {
+      document.removeEventListener('mousedown', this._onDocDown, true);
+      this._onDocDown = null;
+    }
     // 没提交的内容存下来，重开面板还在。
     // 如果这次是从草稿恢复的、又被删空了，说明不要了，顺手清掉；
     // 否则空输入框不动草稿（别把快捷弹窗里正在写的内容误删）。
@@ -1891,7 +2219,11 @@ class CardsView extends ItemView {
     const ok = await this.plugin.appendCard(text);
     if (!ok) return;
     this.inputEl.value = '';
+    // 交完一条就回到自动高度：手动拖的尺寸只服务这一次输入
+    this._manualH = false;
+    if (this.inputEl.style) this.inputEl.style.height = '';
     if (this.autoGrow) this.autoGrow();
+    if (this.syncSaveBtn) this.syncSaveBtn();
     this.dismissDraftHint();
     this._draftRestored = false;
     await this.plugin.clearDraft();
@@ -1913,7 +2245,7 @@ class CardsView extends ItemView {
       this._loadedOnce = true;
       // 顺手重算引用（只读内存索引，几毫秒）
       this.plugin.refreshRefs();
-      this.renderTagbar();
+      this.renderFilters();
       this.renderList();
     } finally {
       this._refreshing = false;
@@ -1949,7 +2281,7 @@ class CardsView extends ItemView {
       }
     }
 
-    this.renderTagbar();
+    this.renderFilters();
     this.renderList({ keepScroll: true });
 
     // 读的途中被替换过，可能又落后了，补一次全量收尾
@@ -1959,7 +2291,7 @@ class CardsView extends ItemView {
   /** 数据没变、只是要更新一下界面文字（比如「最近删除」条数） */
   rerender() {
     if (!this.state || !this._loadedOnce) return;
-    this.renderTagbar();
+    this.renderFilters();
     this.renderList();
   }
 
@@ -1975,174 +2307,887 @@ class CardsView extends ItemView {
     this.state.refFilter = v || '';
     // 换了筛选条件，旧勾选可能已经不在结果里，清掉更安全
     if (this.state.selectMode) this.state.selected.clear();
-    this.renderRefBtn();
+    this.renderFilters();
     this.renderList();
   }
 
-  cycleRefFilter() {
-    if (!this.plugin.refsReady()) {
-      new Notice('引用统计还在准备，稍等一下再试');
+  /** 现在有几项筛选在生效（引用算一项，标签每个算一项，无标签算一项） */
+  /** 生效条件数：搜索词也算一条，跟 chips 上看到的一致 */
+  activeFilterCount() {
+    return (
+      (String(this.state.search || '').trim() ? 1 : 0) +
+      (this.state.refFilter ? 1 : 0) +
+      (this.state.tags || []).length +
+      (this.state.untagged ? 1 : 0)
+    );
+  }
+
+  /** 筛选按钮的「亮着」与右下小圆点：有生效条件才亮 */
+  renderFilterBtnState() {
+    if (!this.filterBtnEl) return;
+    const n = this.activeFilterCount();
+    this.filterBtnEl.toggleClass('is-active', n > 0);
+    if (this.filterDotEl) this.filterDotEl.toggleClass('is-hidden', !n);
+  }
+
+  /** chips / 面板 / 按钮一次性对齐；数据没变（比如只改了引用索引）时也能安全调用 */
+  renderFilters() {
+    this.renderChips();
+    this.renderFilterBtnState();
+    if (this.state.filterOpen) {
+      // chips 可能多一行/少一行，面板要跟着挪，不然会压住 chips
+      this.renderFilterPanel();
+      this.positionPop();
+      this.fitPopHeight();
+      this.updateTreeMore();
+    }
+    this.syncListGap();
+  }
+
+  /* ---------------- 标签：父子树 + 多选 ---------------- */
+
+  /** 标签森林按 cards 引用缓存：同一批卡片不为每次重画重算一遍 */
+  tagForest() {
+    const cards = this.state.cards;
+    if (!this._forest || this._forest.ref !== cards) {
+      const f = qmBuildTagForest(cards);
+      this._forest = { ref: cards, tree: f.tree, untagged: f.untagged };
+    }
+    return this._forest;
+  }
+
+  isTagSelected(keyLower) {
+    return (this.state.tags || []).some((t) => qmLowerPath(t) === keyLower);
+  }
+
+  /** 最近的、已被选中的祖先：用于「已包含在 #写作 里」的提示 */
+  selectedAncestorPath(keyLower) {
+    const parts = String(keyLower || '').split(QM_TAG_SEP);
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const p = parts.slice(0, i).join(QM_TAG_SEP);
+      const hit = (this.state.tags || []).find((t) => qmLowerPath(t) === p);
+      if (hit) return hit;
+    }
+    return '';
+  }
+
+  /** 这个节点的后代里有没有被选中的（用于半选状态） */
+  hasSelectedBelow(node) {
+    for (const ch of node.children || []) {
+      if (this.isTagSelected(ch.key) || this.hasSelectedBelow(ch)) return true;
+    }
+    return false;
+  }
+
+  /** 勾一个标签：被祖先覆盖时忽略；已选则取消；未选则加入，并把它下面已选的子标签合并掉 */
+  toggleTagFilter(path) {
+    const key = qmLowerPath(path);
+    if (!key) return;
+
+    const anc = this.selectedAncestorPath(key);
+    if (anc) {
+      new Notice('已包含在 #' + anc + ' 里');
       return;
     }
-    const order = ['', 'has', 'none'];
-    const cur = this.state.refFilter || '';
-    const next = order[(order.indexOf(cur) + 1) % order.length];
-    this.setRefFilter(next);
-  }
 
-  renderRefBtn() {
-    if (!this.refBtnEl) return;
-    const v = this.state.refFilter || '';
-    this.refBtnEl.setText(v === 'has' ? '引用·有' : v === 'none' ? '引用·无' : '引用');
-    this.refBtnEl.toggleClass('is-active', !!v);
-  }
+    const cur = (this.state.tags || []).slice();
+    const at = cur.findIndex((t) => qmLowerPath(t) === key);
+    if (at >= 0) {
+      cur.splice(at, 1);
+    } else {
+      // 勾父标签：子标签的条件已经被它覆盖，合并掉，避免「已生效 3 项」其实是两件事
+      const rest = cur.filter((t) => qmLowerPath(t).indexOf(key + QM_TAG_SEP) !== 0);
+      cur.length = 0;
+      for (const t of rest) cur.push(t);
+      cur.push(path);
+      this.state.expanded[key] = true;
+    }
 
-  /** 统一设置标签筛选：换视角时清掉旧的勾选，避免批量删掉看不见的卡片 */
-  setTag(tag) {
-    this.state.activeTag = tag || '';
+    this.state.untagged = false;
+    this.state.tags = cur;
     if (this.state.selectMode) this.state.selected.clear();
-    this.renderTagbar();
+    this.renderFilters();
     this.renderList();
   }
 
-  renderTagbar() {
-    const el = this.tagbarEl;
+  setFilterTags(list) {
+    this.state.tags = (list || []).filter(Boolean);
+    if (this.state.tags.length) this.state.untagged = false;
+    if (this.state.selectMode) this.state.selected.clear();
+    this.renderFilters();
+    this.renderList();
+  }
+
+  clearFilters() {
+    this.state.refFilter = '';
+    this.state.tags = [];
+    this.state.untagged = false;
+    // 搜索也算一条条件，否则「清除筛选」之后还能看到一张搜索 chip
+    this.state.search = '';
+    if (this.searchEl) this.searchEl.value = '';
+    if (this.syncSearchClear) this.syncSearchClear();
+    if (this.state.selectMode) this.state.selected.clear();
+    this.renderFilters();
+    this.renderList();
+  }
+
+  /* ---------------- 生效条件 chips ---------------- */
+
+  chipParts() {
+    const parts = [];
+
+    // 搜索也算一条生效条件：不写 chip 的话，敲了词之后界面上没有任何「现在筛着什么」的痕迹
+    const kw = String(this.state.search || '').trim();
+    if (kw) {
+      parts.push({
+        text: '\u201c' + kw + '\u201d',
+        sub: '',
+        clear: () => {
+          this.state.search = '';
+          if (this.searchEl) this.searchEl.value = '';
+          if (this.syncSearchClear) this.syncSearchClear();
+          if (this.state.selectMode) this.state.selected.clear();
+          this.renderFilters();
+          this.renderList();
+        },
+      });
+    }
+
+    const rf = this.state.refFilter;
+    if (rf) {
+      parts.push({
+        text: rf === 'has' ? '已引用' : '未引用',
+        sub: '',
+        clear: () => this.setRefFilter(''),
+      });
+    }
+
+    if (this.state.untagged) {
+      parts.push({
+        text: '无标签',
+        sub: '',
+        clear: () => {
+          this.state.untagged = false;
+          this.renderFilters();
+          this.renderList();
+        },
+      });
+    }
+
+    const forest = this.tagForest();
+    const index = new Map();
+    const walk = (arr) => {
+      for (const n of arr) {
+        index.set(n.key, n);
+        walk(n.children);
+      }
+    };
+    walk(forest.tree);
+
+    for (const t of this.state.tags || []) {
+      const node = index.get(qmLowerPath(t));
+      const kids = node ? qmCountTagDescendants(node) : 0;
+      parts.push({
+        text: '#' + t,
+        sub: kids ? '含 ' + kids : '',
+        clear: () => this.setFilterTags((this.state.tags || []).filter((x) => x !== t)),
+      });
+    }
+
+    return parts;
+  }
+
+  renderChips() {
+    const el = this.chipsEl;
     if (!el) return;
     el.empty();
 
-    const NONE = this.NO_TAG;
-    const tree = qmBuildTagTree(this.state.cards);
-    const act = this.state.activeTag;
-    const actLower = act && act !== NONE ? qmLowerPath(act) : '';
-    const actGroupKey = actLower ? actLower.split(QM_TAG_SEP)[0] : '';
+    const parts = this.chipParts();
+    if (!parts.length) {
+      el.removeClass('show');
+      return;
+    }
+    el.addClass('show');
 
-    el.toggleClass('is-expanded', !!this.state.tagbarExpanded);
+    // 一行放不下就折成 +N：点它去筛选面板看全（不换行、不撑高）
+    const MAX = 3;
+    const shown = parts.slice(0, MAX);
+    for (const p of shown) {
+      const chip = el.createSpan({ cls: 'qm-chip' });
+      chip.createSpan({ text: p.text });
+      if (p.sub) chip.createEl('em', { text: p.sub });
+      const x = chip.createEl('button', { text: '\u00d7' });
+      x.setAttr('aria-label', '清除');
+      x.onclick = (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        p.clear();
+      };
+    }
 
-    /* ---- 第一行：全部 / 无标签 / 顶层组 / 更多 ---- */
-    const row1 = el.createDiv({ cls: 'qm-tagbar-row1' });
+    const rest = parts.length - shown.length;
+    if (rest > 0) {
+      const more = el.createSpan({ cls: 'qm-chip qm-chip-more', text: '+' + rest });
+      more.setAttr('title', '还有 ' + rest + ' 个条件');
+      more.onclick = (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        this.openFilterPanel();
+      };
+    }
 
-    const all = row1.createSpan({
-      text: '全部 ' + this.state.cards.length,
-      cls: 'qm-tagbar-item' + (act ? '' : ' is-active'),
+    // chips 出现/消失会改高度，打开着的面板要跟着下移
+    if (this.state && this.state.filterOpen) this.positionPop();
+  }
+
+  /* ---------------- 筛选浮层 ---------------- */
+
+  toggleFilterPanel() {
+    if (this.state.filterOpen) this.closeFilterPanel();
+    else this.openFilterPanel();
+  }
+
+  openFilterPanel() {
+    this.state.filterOpen = true;
+    // 先把 chips 画出来，才有高度可量：面板要落在 chips 下面，不能把它盖住
+    this.renderChips();
+    this.renderFilterPanel();
+    this.positionPop();
+    if (this.popEl) this.popEl.addClass('show');
+    // 显示之后才量得出真实高度，按可视区再收一次
+    this.fitPopHeight();
+    this.updateTreeMore();
+    this.syncListGap();
+  }
+
+  closeFilterPanel() {
+    this.state.filterOpen = false;
+    if (this.popEl) this.popEl.removeClass('show');
+    this.syncListGap();
+  }
+
+  /** 浮层跟着工具行（和 chips）走：面板不参与布局，位置只能自己算 */
+  positionPop() {
+    const pop = this.popEl;
+    const bar = this.toolRowEl;
+    if (!pop || !bar) return;
+
+    // 用 offsetTop 而不是 getBoundingClientRect：工具行与浮层在同一个定位上下文里，
+    // 相减不会因为侧栏滚动 / 缩放产生偏差（老代码就是漏了这一步，面板会落回顶部）
+    let top = 0;
+    if (typeof bar.offsetTop === 'number') {
+      top = bar.offsetTop + bar.offsetHeight + 6;
+    } else if (typeof bar.getBoundingClientRect === 'function' && this.wrapEl) {
+      const wr = this.wrapEl.getBoundingClientRect();
+      const tr = bar.getBoundingClientRect();
+      top = tr.bottom - wr.top + 6;
+    }
+
+    // chips 在面板上面，面板要让开它们
+    if (this.chipParts().length && this.chipsEl && typeof this.chipsEl.offsetHeight === 'number') {
+      top += this.chipsEl.offsetHeight + 7;
+    }
+    pop.style.top = Math.max(0, Math.round(top)) + 'px';
+  }
+
+  /**
+   * 侧栏不高的时候，面板底部会顶出可视区（外面 overflow:hidden 会把它切掉）。
+   * 这时把标签窗口收一点，保证「清除筛选」和最后几行永远能看到。
+   */
+  fitPopHeight() {
+    const pop = this.popEl;
+    const wrap = this.wrapEl;
+    const tree = this.treeEl;
+    if (!pop || !wrap || !tree) return;
+    if (!wrap.clientHeight) return;
+    tree.style.height = '';
+    const top = parseFloat(pop.style.top || '0') || 0;
+    const avail = wrap.clientHeight - top - 10;
+    const need = pop.offsetHeight;
+    if (need > avail) {
+      const h = Math.max(88, QM_TREE_H - (need - avail));
+      tree.style.height = h + 'px';
+    }
+  }
+
+  /**
+   * 面板是覆盖式浮层（和截图一致）：打开时卡片区不位移、不被挤压，
+   * 面板像菜单一样浮在列表上面。关掉就恢复原样。
+   * 早期版本往列表上补过一段 padding（怕结果被面板挡住），那会让卡片整体下跳，已去掉。
+   */
+  syncListGap() {
+    const list = this.listEl;
+    if (!list) return;
+    if (list.style.paddingTop) list.style.paddingTop = '';
+  }
+
+  renderFilterPanel() {
+    const el = this.popEl;
+    if (!el) return;
+    // 重画会丢掉标签窗口的滚动位置，勾一个标签就跳回顶部会很难用
+    const keepTop = this.treeEl ? this.treeEl.scrollTop || 0 : 0;
+    el.empty();
+
+    el.createDiv({ cls: 'qm-pop-title', text: '筛选' });
+
+    /* ---- 引用情况 ---- */
+    el.createDiv({ cls: 'qm-pop-label', text: '引用情况' });
+    const seg = el.createDiv({ cls: 'qm-seg' });
+    const refOpts = [['', '全部'], ['has', '已引用'], ['none', '未引用']];
+    for (const [v, label] of refOpts) {
+      const b = seg.createEl('button', {
+        text: label,
+        cls: this.state.refFilter === v ? 'on' : '',
+      });
+      b.onclick = (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        this.setRefFilter(v);
+      };
+    }
+
+    /* ---- 标签 ---- */
+    const lab = el.createDiv({ cls: 'qm-pop-label' });
+    lab.createSpan({ text: '标签' });
+    if ((this.state.tags || []).length) {
+      lab.createSpan({ cls: 'qm-pop-sel', text: '已选 ' + this.state.tags.length });
+    }
+
+    const treeWrap = el.createDiv({ cls: 'qm-tree-wrap' });
+    const tree = treeWrap.createDiv({ cls: 'qm-tagtree' });
+    this.treeEl = tree;
+    tree.addEventListener('scroll', () => this.updateTreeMore());
+
+    const forest = this.tagForest();
+
+    // 「无标签」不是标签，是另一种筛选条件，所以放在树上面单独一行
+    const un = tree.createDiv({
+      cls: 'qm-tnode qm-tnode-untagged' + (this.state.untagged ? ' is-on' : ''),
     });
-    all.onclick = () => {
-      this.setTag('');
+    un.setAttr('title', '只看没有写标签的卡片');
+    un.createSpan({ cls: 'qm-caret is-blank' });
+    un.createSpan({ cls: 'qm-tname', text: '无标签' });
+    un.createSpan({ cls: 'qm-tcount', text: String(forest.untagged) });
+    un.createSpan({ cls: 'qm-tmark', text: '\u2713' });
+    un.onclick = () => {
+      this.state.untagged = !this.state.untagged;
+      if (this.state.untagged) this.state.tags = [];
+      if (this.state.selectMode) this.state.selected.clear();
+      this.renderFilters();
+      this.renderList();
     };
 
-    const none = row1.createSpan({
-      text: '无标签 ' + tree.untagged,
-      cls: 'qm-tagbar-item qm-tagbar-none' + (act === NONE ? ' is-active' : ''),
+    for (const node of forest.tree) this.renderTagNode(tree, node, 0);
+
+    /* ---- 底部 ---- */
+    const foot = el.createDiv({ cls: 'qm-pop-foot' });
+    const clear = foot.createEl('button', { cls: 'qm-link-btn', text: '清除筛选' });
+    clear.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      this.clearFilters();
+    };
+    const n = this.activeFilterCount();
+    foot.createSpan({
+      cls: 'qm-pop-note',
+      text: n ? '已生效 ' + n + ' 项' : '没有生效的筛选',
     });
-    none.onclick = () => {
-      this.setTag(act === NONE ? '' : NONE);
+
+    this.updateTreeMore();
+    if (keepTop && tree.scrollTop !== keepTop) tree.scrollTop = keepTop;
+  }
+
+  /**
+   * 标签树的一行：折叠三角 / 名字 / 命中数 / 勾选框。
+   * 三种状态互斥：自己选中 → 后代选中（半选）→ 祖先已选、被覆盖（淡色勾，不可点）。
+   */
+  renderTagNode(parent, node, depth) {
+    const key = node.key;
+    const sel = this.isTagSelected(key);
+    const covered = !sel && !!this.selectedAncestorPath(key);
+    const some = !sel && !covered && this.hasSelectedBelow(node);
+    const open = !!this.state.expanded[key];
+    const kids = node.children.length > 0;
+
+    const row = parent.createDiv({
+      cls:
+        'qm-tnode' +
+        (sel ? ' is-on' : '') +
+        (some ? ' is-some' : '') +
+        (covered ? ' is-inherit' : '') +
+        (depth ? ' is-child' : ''),
+    });
+    row.setAttr('title', '#' + node.path + ' \u00b7 ' + node.count + ' 条');
+
+    const caret = row.createSpan({
+      cls: 'qm-caret' + (kids ? '' : ' is-blank'),
+      text: kids ? (open ? '\u25be' : '\u25b8') : '',
+    });
+    caret.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (!kids) return;
+      if (this.state.expanded[key]) delete this.state.expanded[key];
+      else this.state.expanded[key] = true;
+      this.renderFilterPanel();
+      this.syncListGap();
     };
 
-    const LIMIT = 4;
-    const expanded = !!this.state.tagbarExpanded;
-    const groups = tree.groups;
-    let shown = expanded ? groups.slice() : groups.slice(0, LIMIT);
+    row.createSpan({ cls: 'qm-tname', text: (depth ? '' : '#') + node.label });
+    row.createSpan({ cls: 'qm-tcount', text: String(node.count) });
+    row.createSpan({ cls: 'qm-tmark', text: '\u2713' });
 
-    // 当前选中的组始终可见（即使被折叠到「更多」里，也不改变它的位置）
-    const activeGroup = actGroupKey ? groups.find((g) => g.key === actGroupKey) : null;
-    if (activeGroup && !shown.some((g) => g.key === activeGroup.key)) {
-      shown = [activeGroup].concat(shown);
+    row.onclick = () => this.toggleTagFilter(node.path);
+
+    if (kids && open) {
+      const box = parent.createDiv({ cls: 'qm-tchildren' });
+      for (const ch of node.children) this.renderTagNode(box, ch, depth + 1);
     }
+  }
 
-    const chips = row1.createDiv({ cls: 'qm-tagbar-chips' });
-    for (const g of shown) {
-      const inGroup = !!actGroupKey && actGroupKey === g.key;
-      const isWhole = inGroup && actLower === g.key;
-      let text = '#' + g.label + ' ' + g.count;
-      if (g.children.length) text += inGroup ? ' \u25b4' : ' \u25be';
-      const chip = chips.createSpan({
-        text,
-        cls: 'qm-tagbar-item' +
-          (g.children.length ? ' qm-tagbar-group' : '') +
-          (inGroup ? ' is-in-group' : '') +
-          (isWhole ? ' is-active' : ''),
-      });
-      chip.onclick = () => {
-        // 已在该组：再点一次回到「全部」；在子标签里：回到整组；其它：进入该组
-        this.setTag(isWhole ? '' : g.path);
-      };
-    }
+  /** 标签窗口还有内容没露出来时，底部渐隐提示「还能往下翻」 */
+  updateTreeMore() {
+    const tree = this.treeEl;
+    const wrap = tree && (tree.parentNode || tree.parent);
+    if (!tree || !wrap) return;
+    const rest =
+      (tree.scrollHeight || 0) - (tree.scrollTop || 0) - (tree.clientHeight || 0);
+    // 阈值给到 0.5：差一两像素时，下一行的勾选框会露出上半截，看着像一道脏线，
+    // 这种「几乎没溢出」的情况也要压上渐隐
+    wrap.toggleClass('more', rest > 0.5);
+  }
 
-    if (groups.length > LIMIT || expanded) {
-      const rest = Math.max(0, groups.length - LIMIT);
-      const fold = row1.createSpan({
-        cls: 'qm-tagbar-fold',
-        text: expanded ? '收起 \u25b4' : '更多 ' + rest + ' \u25be',
-      });
-      fold.onclick = () => {
-        this.state.tagbarExpanded = !this.state.tagbarExpanded;
-        this.renderTagbar();
-      };
-    }
+  /* ---------------- 下拉菜单（自绘，贴着按钮） ---------------- */
 
-    /* ---- 第二行：仅当选中组有子标签时出现 ---- */
-    if (activeGroup && activeGroup.children.length) {
-      const row2 = el.createDiv({ cls: 'qm-tagbar-row2' });
-
-      const whole = row2.createSpan({
-        text: '整组 ' + activeGroup.count,
-        cls: 'qm-tagbar-item qm-tagbar-whole' +
-          (actLower === activeGroup.key ? ' is-active' : ''),
-      });
-      whole.onclick = () => {
-        this.setTag(activeGroup.path);
-      };
-
-      for (const ch of activeGroup.children) {
-        const chLower = qmLowerPath(ch.path);
-        const chip = row2.createSpan({
-          text: '#' + ch.path + ' ' + ch.count,
-          cls: 'qm-tagbar-item' + (actLower === chLower ? ' is-active' : ''),
-        });
-        chip.onclick = () => {
-          // 再点一次已选中的子标签，退回整组
-          this.setTag(actLower === chLower ? activeGroup.path : ch.path);
+  /**
+   * 原来用 Obsidian 原生 Menu：它固定在鼠标点、宽度也不受控，侧栏里总是偏一块。
+   * 这里自己画一个：贴着触发按钮、右边缘对齐，放不下就翻到上方。
+   * 返回的 items 是普通对象数组（每项带 click()），调用方只认这个。
+   */
+  showMenu(items, anchor) {
+    for (const it of items) {
+      if (!it.click) {
+        it.click = () => {
+          if (!it.disabled && it.onClick) it.onClick();
         };
       }
     }
+    this.menuItems = items;
+
+    // 再点一次同一个按钮就是收起
+    if (this.menuOpen && anchor && this.menuAnchor === anchor) {
+      this.closeMenu();
+      return { items };
+    }
+    this.closeMenu();
+
+    const root = this.wrapEl;
+    const canPaint =
+      typeof document !== 'undefined' &&
+      !!document.body &&
+      !!anchor &&
+      typeof anchor.getBoundingClientRect === 'function' &&
+      !!root &&
+      typeof root.getBoundingClientRect === 'function' &&
+      typeof root.createDiv === 'function';
+    // 测试桩里没有真实布局，只把条目交出去
+    if (!canPaint) return { items };
+
+    // 筛选浮层和菜单都贴着右侧，同时挂着会打架
+    if (this.state && this.state.filterOpen) this.closeFilterPanel();
+
+    const menu = root.createDiv({ cls: 'qm-menu' });
+    for (const it of items) {
+      if (it.separator) {
+        menu.createDiv({ cls: 'qm-menu-sep' });
+        continue;
+      }
+      const row = menu.createDiv({
+        cls:
+          'qm-menu-item' +
+          (it.disabled ? ' is-disabled' : '') +
+          (it.danger ? ' is-danger' : ''),
+      });
+      const ico = row.createSpan({ cls: 'qm-menu-ico' });
+      if (it.icon) setIcon(ico, it.icon);
+      row.createSpan({ cls: 'qm-menu-label', text: it.title });
+      if (!it.disabled) {
+        row.onclick = (e) => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          const fn = it.onClick;
+          this.closeMenu();
+          if (fn) fn();
+        };
+      }
+    }
+
+    // 先挂上去再量：菜单宽度跟着文字走，事先猜不准
+    const ar = anchor.getBoundingClientRect();
+    const rr = root.getBoundingClientRect();
+    const pos = qmMenuPlace(ar, rr, menu.offsetWidth || 200, menu.offsetHeight || 0);
+    menu.style.left = pos.left + 'px';
+    menu.style.top = pos.top + 'px';
+
+    this.menuEl = menu;
+    this.menuAnchor = anchor;
+    this.menuOpen = true;
+
+    // 点别处 / Esc / 列表滚动都收起，免得菜单跟内容脱节
+    const onDown = (e) => {
+      const t = e.target;
+      if (t && menu.contains && menu.contains(t)) return;
+      if (t && anchor.contains && anchor.contains(t)) return;
+      this.closeMenu();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') this.closeMenu();
+    };
+    const onScroll = () => this.closeMenu();
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    if (this.listEl && this.listEl.addEventListener) {
+      this.listEl.addEventListener('scroll', onScroll, { passive: true });
+    }
+    this._menuOff = () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      if (this.listEl && this.listEl.removeEventListener) {
+        this.listEl.removeEventListener('scroll', onScroll);
+      }
+    };
+
+    return { items };
   }
 
-  /* ---------------- 搜索作用域 ---------------- */
-
-  renderScope() {
-    const el = this.scopeEl;
-    if (!el) return;
-
-    const tag = this.state.activeTag;
-    const hasSearch = !!String(this.state.search || '').trim();
-    const rf = this.effectiveRefFilter();
-
-    const parts = [];
-    if (rf === 'has') parts.push('只看已引用');
-    if (rf === 'none') parts.push('只看未引用');
-    // 标签筛选只在「同时有关键词」时提示，平时不占地方
-    if (tag && hasSearch) {
-      parts.push('只在 ' + (tag === this.NO_TAG ? '无标签' : '#' + tag) + ' 里搜索');
+  closeMenu() {
+    if (this._menuOff) {
+      this._menuOff();
+      this._menuOff = null;
     }
-    // 有筛选时永远说清楚，避免「卡片怎么少了」的错觉
-    if (!parts.length) {
-      el.toggleClass('is-hidden', true);
-      el.empty();
+    if (this.menuEl) {
+      this.menuEl.remove();
+      this.menuEl = null;
+    }
+    this.menuAnchor = null;
+    this.menuOpen = false;
+  }
+
+  openMoreMenu(evt) {
+    const anchor = this.moreBtnEl || (evt && evt.currentTarget) || null;
+
+    // 底部状态栏删掉后，「共多少 / 命中多少」挪到这里：筛选时也能看到命中数
+    const hit = this.filtered().length;
+    const total = this.state.cards.length;
+    const cap = this.plugin.settings.maxCards;
+    const capNote = cap > 0 && hit > cap ? ' \u00b7 显示最近 ' + cap : '';
+    const countLine =
+      (hit === total ? '共 ' + total + ' 条卡片' : '共 ' + total + ' 条 \u00b7 命中 ' + hit + ' 条') + capNote;
+    const n = (this.plugin.settings.trash || []).length;
+
+    const items = [
+      { title: countLine, icon: 'arrow-right', disabled: true },
+      { separator: true },
+      {
+        title: this.state.selectMode ? '退出多选' : '多选',
+        icon: 'list-checks',
+        onClick: () => this.toggleSelectMode(),
+      },
+      {
+        title: n ? '最近删除 ' + n : '最近删除',
+        icon: 'trash-2',
+        onClick: () => new TrashModal(this.app, this.plugin).open(),
+      },
+      {
+        title: '打开本月文件',
+        icon: 'file-text',
+        onClick: () => this.plugin.openCurrentMonthFile(),
+      },
+    ];
+    return this.showMenu(items, anchor);
+  }
+
+  /* ---------------- 回看 ---------------- */
+
+  openReview() {
+    if (this.state.selectMode) {
+      new Notice('先退出多选，再看回看');
       return;
     }
+    // 筛选浮层比回看层级高，不关掉会浮在回看上面
+    if (this.state.filterOpen) this.closeFilterPanel();
+    this.state.reviewOpen = true;
+    this.state.reviewDone = {};
+    this.state.insertedIds = new Set();
+    this.state.reviewShown = new Set();
+    this.pickReview();
+    this.renderReview();
+    // 目标笔记里已经有哪些卡，扫完再补一次「已插入」。
+    // 不扫就只能靠「这一轮点过没点过」，换一批 / 重开回看全都会丢。
+    void this.scanInserted();
+  }
 
+  /**
+   * 抽这一轮的卡片。
+   * 旧卡优先（回看的意义是翻旧的）；旧卡不够一屏时用今天的补，
+   * 否则刚记的卡永远进不来——库里只有四张旧卡时就会一直翻那四张。
+   */
+  pickReview() {
+    const today = moment().format('YYYY-MM-DD');
+    const cards = this.state.cards || [];
+    const older = cards.filter((c) => c.date !== today);
+    const fresh = cards.filter((c) => c.date === today);
+    let pool = qmShuffle(older).concat(qmShuffle(fresh));
+
+    // 换一批：先把这一轮已经展示过的排掉，剩下的还够一屏就只用没看过的
+    const shown = this.state.reviewShown;
+    if (shown && shown.size) {
+      const rest = pool.filter((c) => !shown.has(this.cardKey(c)));
+      if (rest.length >= QM_REVIEW_N) pool = rest;
+    }
+
+    this.state.review = pool.slice(0, QM_REVIEW_N);
+    if (shown) for (const c of this.state.review) shown.add(this.cardKey(c));
+  }
+
+  /** 扫当前笔记里已有的块引用，用于判断「这张已经插过了」 */
+  async scanInserted() {
+    // 每次扫描领一个号：切笔记/重开回看时旧的那次结果直接丢掉，别覆盖新的
+    const token = (this._scanToken = (this._scanToken || 0) + 1);
+    const ids = new Set();
+    let file = null;
+    try {
+      file = this.plugin.currentNoteFile();
+      const isNote = !!file && (file.extension === 'md' || /\.md$/i.test(String(file.path || '')));
+      if (isNote) {
+        const text = String(await this.app.vault.cachedRead(file));
+        const re = /#\^([A-Za-z0-9][A-Za-z0-9-]*)/g;
+        let m = re.exec(text);
+        while (m) {
+          ids.add(m[1]);
+          m = re.exec(text);
+        }
+      }
+    } catch (e) {
+      /* 读不到就当都没插过，最多多点一次，插之前还会再查一遍 */
+    }
+    if (token !== this._scanToken) return;
+    if (!this.state.insertedIds) this.state.insertedIds = new Set();
+    // 合并而不是替换：扫描是异步的，读盘期间可能刚插进去一张，
+    // 直接覆盖会把那条标记冲掉，按钮就退回「插入到这篇」了
+    for (const id of ids) this.state.insertedIds.add(id);
+    // 只更新按钮状态，不重画整列：重画会把人正在看的回看列表弹回顶部
+    if (this.state.reviewOpen) this.syncReviewInsertButtons();
+  }
+
+  /** 换了目标笔记：旧的「已插入」全部作废，按新笔记重扫 */
+  rescanInserted() {
+    this.state.insertedIds = new Set();
+    this.syncReviewInsertButtons();
+    void this.scanInserted();
+  }
+
+  /** 按当前笔记内容刷新回看里所有「插入」按钮（不重画 DOM，滚动位置不动） */
+  syncReviewInsertButtons() {
+    const list = this._insertBtns || [];
+    for (const it of list) this.paintInsertBtn(it.card, it.btn);
+  }
+
+  /** 一张卡的插入按钮该长什么样：已插入 / 插入全文（无块 ID）/ 插入到这篇 */
+  paintInsertBtn(card, btn) {
+    if (!card || !btn) return;
+    const done = this.isInserted(card);
+    const noId = !card.id;
+    btn.setText(done ? '已插入' : noId ? '插入全文' : '插入到这篇');
+    if (done) btn.addClass('is-done');
+    else btn.removeClass('is-done');
+  }
+
+  /** 这张卡在这篇里了吗？有块 ID 就看笔记内容，没有就退回本轮标记 */
+  isInserted(card) {
+    if (!card) return false;
+    if (card.id) return !!(this.state.insertedIds && this.state.insertedIds.has(card.id));
+    return !!(this.state.reviewDone && this.state.reviewDone[this.cardKey(card)]);
+  }
+
+  closeReview() {
+    this.state.reviewOpen = false;
+    this._insertBtns = [];
+    if (this.reviewEl) {
+      this.reviewEl.removeClass('show');
+      this.reviewEl.empty();
+    }
+    this.renderList({ keepScroll: true });
+  }
+
+  renderReview() {
+    const el = this.reviewEl;
+    if (!el) return;
     el.empty();
-    el.toggleClass('is-hidden', false);
-    el.createSpan({ cls: 'qm-scope-text', text: parts.join(' · ') });
-    const x = el.createSpan({ cls: 'qm-scope-x', text: '\u00d7' });
-    x.setAttr('aria-label', '清除筛选');
-    x.onclick = () => {
-      this.state.refFilter = '';
-      this.renderRefBtn();
-      this.setTag('');
+    // 每次重画重建这批按钮的索引：插入 / 扫描完成后就地改它们，不再整列重画
+    this._insertBtns = [];
+    if (!this.state.reviewOpen) {
+      el.removeClass('show');
+      return;
+    }
+    el.addClass('show');
+
+    const head = el.createDiv({ cls: 'qm-review-head' });
+    const back = head.createEl('button', { cls: 'qm-review-back' });
+    back.setAttr('aria-label', '返回卡片');
+    back.setAttr('title', '返回卡片');
+    qmIcon(back, 'back');
+    back.onclick = () => this.closeReview();
+
+    head.createSpan({ cls: 'qm-review-title', text: '回看' });
+
+    const sh = head.createEl('button', { cls: 'qm-review-shuffle', text: '换一批' });
+    sh.onclick = () => {
+      // 不再清「已插入」：它跟着笔记内容走，换一批不影响
+      this.pickReview();
+      this.renderReview();
     };
+
+    el.createDiv({
+      cls: 'qm-review-sub',
+      text: this.state.review.length
+        ? '随机翻 ' + this.state.review.length + ' 张 \u00b7 想放进正在写的笔记就点「插入到这篇」'
+        : '卡片还不够，先去记几条吧',
+    });
+
+    const list = el.createDiv({ cls: 'qm-review-list' });
+    for (const card of this.state.review) {
+      const box = list.createDiv({ cls: 'qm-rv-card' });
+
+      const meta = box.createDiv({ cls: 'qm-rv-meta' });
+      meta.createSpan({ text: String(card.date || '').slice(5) + ' ' + card.time });
+      meta.createSpan({ cls: 'qm-rv-sep', text: '\u00b7' });
+      meta.createSpan({ text: qmDaysAgo(card.date) + ' 天前' });
+      const nRef = this.plugin.refCount(card);
+      if (nRef) {
+        meta.createSpan({ cls: 'qm-rv-sep', text: '\u00b7' });
+        meta.createSpan({ text: '被 ' + nRef + ' 篇引用' });
+      }
+
+      const body = box.createDiv({ cls: 'qm-rv-body' });
+      for (const seg of qmBodySegments(card.body)) {
+        if (seg.kind === 'text') {
+          body.appendChild(document.createTextNode(seg.text));
+        } else if (seg.kind === 'tag') {
+          const tag = body.createSpan({ cls: 'qm-tag', text: seg.text });
+          // 回看里点标签：退出回看，按这个标签筛选
+          tag.onclick = (e) => {
+            if (e && e.stopPropagation) e.stopPropagation();
+            this.closeReview();
+            this.state.search = '';
+            if (this.searchEl) this.searchEl.value = '';
+            if (this.syncSearchClear) this.syncSearchClear();
+            this.setFilterTags([seg.value]);
+          };
+        } else {
+          body.createSpan({ cls: 'qm-rv-url', text: seg.text });
+        }
+      }
+
+      const foot = box.createDiv({ cls: 'qm-rv-foot' });
+      const key = this.cardKey(card);
+      const noId = !card.id;
+      const btn = foot.createEl('button', { cls: 'qm-rv-insert' });
+      if (noId) btn.setAttr('title', '这张卡片没有块 ID，只能插正文，没法判断是否插过');
+      // 先按当前状态刷一次文案，之后靠 paintInsertBtn 就地更新
+      this.paintInsertBtn(card, btn);
+      // 登记下来：插入成功、扫描完成都只改这一个按钮，不重画整列
+      // （整列重画会把滚动位置弹回顶部，翻到第 4、5 张插入时尤其明显）
+      if (this._insertBtns) this._insertBtns.push({ card, btn });
+      btn.onclick = async () => {
+        // 已经在笔记里了就不再插：换一批后同一张会再出现，这里必须挡住
+        if (this.isInserted(card)) {
+          new Notice('这张卡片已经在这篇笔记里了');
+          return;
+        }
+        const okInserted = await this.plugin.insertIntoCurrentNote(card, false);
+        if (!okInserted) return;
+        if (card.id) {
+          if (!this.state.insertedIds) this.state.insertedIds = new Set();
+          this.state.insertedIds.add(card.id);
+        } else {
+          this.state.reviewDone[key] = true;
+        }
+        this.paintInsertBtn(card, btn);
+      };
+    }
   }
 
   /* ---------------- 多选删除 ---------------- */
+
+  /**
+   * 给 Obsidian 自己的状态栏（反链数 / 字数）让位。
+   * 状态栏是盖在工作区底部的浮层，视图底边在它下面，浮条不抬就会和那串字叠住。
+   * 量不到（弹窗 / 卸载了状态栏 / 测试桩）就退回默认 10px。
+   */
+  syncSelbarGap() {
+    const root = this.wrapEl;
+    let gap = 10;
+    let cover = 0;
+    try {
+      const bar = document.querySelector('.status-bar');
+      if (root && bar && typeof root.getBoundingClientRect === 'function') {
+        const r = root.getBoundingClientRect();
+        const b = bar.getBoundingClientRect();
+        gap = qmSelbarGap(r.bottom, b.top, 10);
+        cover = qmStatusCover(r.bottom, b.top);
+      }
+    } catch (e) {
+      gap = 10;
+      cover = 0;
+    }
+    try {
+      if (root && root.style && typeof root.style.setProperty === 'function') {
+        root.style.setProperty('--qm-selbar-gap', gap + 'px');
+        // 列表 / 回看的底部留白也要跟着补齐，否则最后一条同样被状态栏盖住
+        root.style.setProperty('--qm-status-h', cover + 'px');
+      }
+    } catch (e) {
+      /* 设不上就按 CSS 里的默认值走 */
+    }
+  }
+
+  /** 底部浮条：跟着多选状态出现/消失，不占常态布局 */
+  renderSelectBar() {
+    const el = this.selectBarEl;
+    if (!el) return;
+    el.empty();
+
+    if (!this.state.selectMode) {
+      el.removeClass('show');
+      if (this.listEl) this.listEl.removeClass('has-selbar');
+      this._selInfoEl = null;
+      this._selDelEl = null;
+      return;
+    }
+
+    el.addClass('show');
+    if (this.listEl) this.listEl.addClass('has-selbar');
+    // 每次都重新量：侧栏高度会变（拆分、折叠、窗口缩放），写死一个值迟早叠上
+    this.syncSelbarGap();
+
+    const n = this.state.selected.size;
+    this._selInfoEl = el.createSpan({ cls: 'qm-selbar-info', text: '已选 ' + n + ' 条' });
+
+    const acts = el.createDiv({ cls: 'qm-selbar-acts' });
+    const cancel = acts.createEl('button', { text: '取消' });
+    cancel.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      this.toggleSelectMode(false);
+    };
+
+    const del = acts.createEl('button', {
+      cls: 'is-danger',
+      text: n ? '删除所选 ' + n : '删除所选',
+    });
+    del.disabled = !n;
+    // 数量在点选过程中会变，回调里读实时值，别用闭包里那份早就过期的 n
+    del.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (!this.state.selected.size) return;
+      this.deleteSelected();
+    };
+    this._selDelEl = del;
+  }
 
   toggleSelectMode(force) {
     const next = typeof force === 'boolean' ? force : !this.state.selectMode;
@@ -2152,14 +3197,42 @@ class CardsView extends ItemView {
     }
     this.state.selectMode = next;
     this.state.selected.clear();
-    this.renderList();
+    // 进出多选也保位置：滚到中间点「多选」，不该被送回顶部
+    this.renderList({ keepScroll: true });
   }
 
   toggleSelected(card) {
     const key = this.cardKey(card);
-    if (this.state.selected.has(key)) this.state.selected.delete(key);
-    else this.state.selected.add(key);
-    this.renderList();
+    const on = !this.state.selected.has(key);
+    if (on) this.state.selected.add(key);
+    else this.state.selected.delete(key);
+    // 就地只改这一张：整列重画会把列表弹回顶部，选第二张时还得重新往下翻
+    this.paintSelected(key, on);
+    this.updateSelectBarCount();
+  }
+
+  /**
+   * 切换某张卡的选中外观，不重画列表。
+   * 找不到这个元素（列表刚好被别的原因重画过）才退回整列重画，且保滚动位置。
+   */
+  paintSelected(key, on) {
+    const box = this._cardEls ? this._cardEls.get(key) : null;
+    if (!box) {
+      this.renderList({ keepScroll: true });
+      return;
+    }
+    if (on) box.addClass('is-picked');
+    else box.removeClass('is-picked');
+  }
+
+  /** 只改浮条上的计数文字，不重画浮条：重画会让鼠标下的按钮闪一下 */
+  updateSelectBarCount() {
+    const n = this.state.selected.size;
+    if (this._selInfoEl) this._selInfoEl.setText('已选 ' + n + ' 条');
+    if (this._selDelEl) {
+      this._selDelEl.setText(n ? '删除所选 ' + n : '删除所选');
+      this._selDelEl.disabled = !n;
+    }
   }
 
   deleteSelected() {
@@ -2209,13 +3282,23 @@ class CardsView extends ItemView {
 
   filtered() {
     const conds = qmParseQuery(this.state.search);
-    const tag = this.state.activeTag;
+    const tags = this.state.tags || [];
+    const untagged = !!this.state.untagged;
     const rf = this.effectiveRefFilter();
     return this.state.cards.filter((c) => {
-      if (tag === this.NO_TAG) {
+      // 「无标签」与标签多选互斥
+      if (untagged) {
         if (!qmCardIsUntagged(c)) return false;
-      } else if (tag) {
-        if (!qmCardHasPath(c, tag)) return false;
+      } else if (tags.length) {
+        // 多选取并集：带任一选中标签（含它的子标签）就命中
+        let hit = false;
+        for (const t of tags) {
+          if (qmCardHasPath(c, t)) {
+            hit = true;
+            break;
+          }
+        }
+        if (!hit) return false;
       }
       if (rf === 'has' && this.plugin.refCount(c) === 0) return false;
       if (rf === 'none' && this.plugin.refCount(c) > 0) return false;
@@ -2226,60 +3309,32 @@ class CardsView extends ItemView {
   renderList(opts) {
     const el = this.listEl;
     if (!el) return;
+    // 列表重画后按钮会是新节点，菜单还挂着就成孤儿了
+    if (this.menuOpen) this.closeMenu();
     // 外部改动（同步、别处保存）引起的重画不该把滚动位置弹回顶部
     const keepScroll = opts && opts.keepScroll ? el.scrollTop || 0 : 0;
     el.empty();
     // 每次重画重新登记数字元素，updateRefs 只改文字、不重画整列
     this._refBadges = new Map();
+    // key → 卡片元素，多选点击时靠它就地更新，不必整列重画（重画会滚回顶部）
+    this._cardEls = new Map();
 
     // 命中范围始终是全量卡片，仅限制渲染条数以保证流畅
     const matched = this.filtered();
     const cap = this.plugin.settings.maxCards;
     const list = cap > 0 ? matched.slice(0, cap) : matched;
 
-    if (this.footerInfoEl) {
-      if (this.state.selectMode) {
-        this.footerInfoEl.setText('已选 ' + this.state.selected.size + ' 条');
-      } else {
-        const total = this.state.cards.length;
-        if (matched.length > 0 && list.length < matched.length) {
-          this.footerInfoEl.setText('命中 ' + matched.length + ' 条 · 显示最近 ' + list.length + ' 条');
-        } else {
-          this.footerInfoEl.setText('共 ' + total + ' 条');
-        }
-      }
-    }
-
-    if (this.trashEl) {
-      const n = (this.plugin.settings.trash || []).length;
-      this.trashEl.setText(n ? '最近删除 ' + n : '');
-      this.trashEl.toggleClass('is-hidden', !n);
-    }
-
-    if (this.selectBtnEl) {
-      this.selectBtnEl.setText(this.state.selectMode ? '取消' : '选择');
-      this.selectBtnEl.toggleClass('is-active', this.state.selectMode);
-    }
-
-    this.renderRefBtn();
-
-    if (this.selectBarEl) {
-      this.selectBarEl.toggleClass('is-hidden', !this.state.selectMode);
-      if (this.delSelBtnEl) {
-        const n = this.state.selected.size;
-        this.delSelBtnEl.setText(n ? '删除所选 ' + n : '删除所选');
-        this.delSelBtnEl.toggleClass('is-disabled', !n);
-      }
-    }
-
-    this.renderScope();
+    // 多选浮条：只在多选时出现，底部常态不留任何东西
+    this.renderSelectBar();
 
     if (!list.length) {
       const empty = el.createDiv({ cls: 'qm-empty' });
       if (this.state.cards.length === 0) {
-        empty.setText('还没有卡片。在上面写一句，Ctrl+Enter 记下。');
+        empty.createDiv({ text: '还没有卡片。' });
+        empty.createDiv({ text: '在上面写一句，Ctrl+Enter 记下。' });
       } else {
-        empty.setText('没有匹配的卡片。');
+        empty.createDiv({ text: '没有匹配的卡片。' });
+        empty.createDiv({ text: '换个词，或者清除筛选。' });
       }
       el.scrollTop = keepScroll;
       return;
@@ -2301,7 +3356,7 @@ class CardsView extends ItemView {
       const day = el.createDiv({
         cls: 'qm-day' + (collapsed ? ' is-collapsed' : '') + (editingHere ? ' is-locked' : ''),
       });
-      day.createSpan({ cls: 'qm-day-arrow', text: collapsed ? '\u25b8' : '\u25be' });
+      day.createSpan({ cls: 'qm-day-arrow', text: collapsed ? '\u25b6' : '\u25bc' });
       day.createSpan({ cls: 'qm-day-text', text: g.date });
       day.createSpan({ cls: 'qm-day-count', text: String(g.cards.length) });
       day.onclick = () => {
@@ -2401,14 +3456,39 @@ class CardsView extends ItemView {
     return head + '：' + shown + '。删除后这些地方的链接会失效（显示为「找不到该块」）。';
   }
 
+  /** 把一段文字塞进卡片正文，命中的搜索词用 <mark> 标出来（跟原型一致） */
+  appendHighlighted(parent, text, kw) {
+    const src = String(text == null ? '' : text);
+    const q = String(kw == null ? '' : kw).trim();
+    if (!q || !src) {
+      parent.appendChild(document.createTextNode(src));
+      return;
+    }
+    const hay = src.toLowerCase();
+    const needle = q.toLowerCase();
+    let i = 0;
+    for (;;) {
+      const at = hay.indexOf(needle, i);
+      if (at < 0) {
+        if (i < src.length) parent.appendChild(document.createTextNode(src.slice(i)));
+        return;
+      }
+      if (at > i) parent.appendChild(document.createTextNode(src.slice(i, at)));
+      // 用 Obsidian 的 createEl 而不是 document.createElement：测试环境里也有这一套
+      parent.createEl('mark', { text: src.slice(at, at + q.length) });
+      i = at + q.length;
+    }
+  }
+
   renderCard(parent, card) {
     const key = this.cardKey(card);
     const picked = this.state.selectMode && this.state.selected.has(key);
     const box = parent.createDiv({ cls: 'qm-card' + (picked ? ' is-picked' : '') });
+    // 登记给多选就地更新用；列表重画时会重建这张表
+    if (this._cardEls) this._cardEls.set(key, box);
 
     if (this.state.selectMode) {
       box.addClass('is-selectable');
-      box.createSpan({ cls: 'qm-tick', text: picked ? '\u2713' : '' });
       box.onclick = (e) => {
         e.stopPropagation();
         this.toggleSelected(card);
@@ -2416,6 +3496,11 @@ class CardsView extends ItemView {
     }
 
     const head = box.createDiv({ cls: 'qm-card-head' });
+    // 勾选框放在时间里侧，跟原型一致；不额外占一行
+    if (this.state.selectMode) {
+      // 勾号常驻，靠 .is-picked 的 color 控制显隐：切换选中只改类，不动文本
+      head.createSpan({ cls: 'qm-tick', text: '\u2713' });
+    }
     head.createSpan({ cls: 'qm-time', text: card.time });
     this.mountRefDot(head, card, key);
 
@@ -2439,7 +3524,8 @@ class CardsView extends ItemView {
       cancel.onclick = () => {
         this.state.editingKey = null;
         this.state.editingDraft = null;
-        this.renderList();
+        // 保位置：编辑的是中间某张，取消后不该被送回顶部
+        this.renderList({ keepScroll: true });
       };
       const ok = bar.createEl('button', { text: '保存', cls: 'qm-mini-btn is-primary' });
       ok.onclick = async () => {
@@ -2453,7 +3539,7 @@ class CardsView extends ItemView {
         if (!saved) return;
         this.state.editingKey = null;
         this.state.editingDraft = null;
-        this.renderList();
+        this.renderList({ keepScroll: true });
       };
 
       ta.addEventListener('keydown', (e) => {
@@ -2464,7 +3550,7 @@ class CardsView extends ItemView {
           e.preventDefault();
           this.state.editingKey = null;
           this.state.editingDraft = null;
-          this.renderList();
+          this.renderList({ keepScroll: true });
         }
       });
       return;
@@ -2472,9 +3558,11 @@ class CardsView extends ItemView {
 
     /* ---- 正文本（标签高亮、裸网址可点） ---- */
     const body = box.createDiv({ cls: 'qm-body' });
+    const kw = String(this.state.search || '').trim();
     for (const seg of qmBodySegments(card.body)) {
       if (seg.kind === 'text') {
-        body.appendChild(document.createTextNode(seg.text));
+        // 搜索命中的字标出来（原型里就是这么做的）
+        this.appendHighlighted(body, seg.text, kw);
         continue;
       }
       if (seg.kind === 'tag') {
@@ -2486,7 +3574,8 @@ class CardsView extends ItemView {
             this.toggleSelected(card);
             return;
           }
-          this.setTag(seg.value);
+          // 点正文里的标签 = 只用这一个标签筛选（原来的多选条件换掉）
+          this.setFilterTags([seg.value]);
         };
         continue;
       }
@@ -2527,7 +3616,7 @@ class CardsView extends ItemView {
     more.setAttr('type', 'button');
     more.setAttr('aria-label', '更多操作');
     more.setAttr('title', '更多操作');
-    setIcon(more, 'more-horizontal');
+    qmIcon(more, 'more');
     // 按下这一下不要被当成「开始拖卡片」，否则菜单还没弹出就先起拖
     more.addEventListener('mousedown', (e) => e.stopPropagation());
     more.onclick = (e) => {
@@ -2538,69 +3627,54 @@ class CardsView extends ItemView {
   }
 
   openCardMenu(card, evt) {
-    const menu = new Menu();
+    const anchor = (evt && evt.currentTarget) || null;
     const info = this.plugin.refSummary(card);
     const n = info ? info.notes : 0;
 
-    menu.addItem((i) =>
-      i
-        .setTitle('复制全文')
-        .setIcon('copy')
-        .onClick(async () => {
+    const items = [
+      {
+        title: '复制全文',
+        icon: 'copy',
+        onClick: async () => {
           await this.plugin.copy(qmPasteText(card.body));
           new Notice('已复制卡片全文');
-        })
-    );
-    menu.addItem((i) => i.setTitle('复制链接').setIcon('link').onClick(() => this.copyRef(card)));
-    menu.addItem((i) => i.setTitle('编辑').setIcon('pencil').onClick(() => this.requestEdit(card)));
-
-    menu.addSeparator();
+        },
+      },
+      { title: '复制链接', icon: 'link', onClick: () => this.copyRef(card) },
+      { title: '编辑', icon: 'pencil', onClick: () => this.requestEdit(card) },
+      { separator: true },
+    ];
 
     if (!this.plugin.refsReady()) {
       // 索引还没建好时说清楚，别让人误以为「没被引用过」
-      menu.addItem((i) =>
-        i.setTitle('引用统计准备中…').setIcon('corner-down-right').setDisabled(true)
-      );
+      items.push({ title: '引用统计准备中…', icon: 'corner-down-right', disabled: true });
     } else if (n) {
       // 笔记名不铺在菜单里：菜单是「动作」，被谁引用是「信息」，
       // 混在一起会被当成一排功能。点这一行单独看，一次看全。
-      menu.addItem((i) =>
-        i
-          .setTitle('被 ' + n + ' 篇笔记引用…')
-          .setIcon('corner-down-right')
-          .onClick(() =>
-            new RefListModal(this.app, info, (r) => this.openRef(r.path, r.line)).open()
-          )
-      );
-
-      menu.addItem((i) =>
-        i
-          .setTitle(this.state.refFilter === 'has' ? '取消「只看已引用」' : '只看被引用的卡片')
-          .setIcon('filter')
-          .onClick(() => this.setRefFilter(this.state.refFilter === 'has' ? '' : 'has'))
-      );
+      items.push({
+        title: '被 ' + n + ' 篇笔记引用…',
+        icon: 'corner-down-right',
+        onClick: () => new RefListModal(this.app, info, (r) => this.openRef(r.path, r.line)).open(),
+      });
+      // 「只看已引用」不在这里再来一遍：它属于「筛选」，入口只有一个
     } else {
-      menu.addItem((i) =>
-        i.setTitle('还没有笔记引用这张卡片').setIcon('corner-down-right').setDisabled(true)
-      );
+      items.push({ title: '还没有笔记引用这张卡片', icon: 'corner-down-right', disabled: true });
     }
 
-    menu.addItem((i) =>
-      i.setTitle('在文件中定位').setIcon('file-search').onClick(() => this.locateCard(card))
-    );
+    items.push({
+      title: '在文件中定位',
+      icon: 'file-search',
+      onClick: () => this.locateCard(card),
+    });
+    items.push({ separator: true });
+    items.push({
+      title: '删除',
+      icon: 'trash-2',
+      danger: true,
+      onClick: () => this.confirmDelete(card),
+    });
 
-    menu.addSeparator();
-    menu.addItem((i) => i.setTitle('删除').setIcon('trash-2').onClick(() => this.confirmDelete(card)));
-
-    // 鼠标点：跟着指针；键盘触发：退回到按钮位置
-    if (evt && (evt.clientX || evt.clientY)) {
-      menu.showAtMouseEvent(evt);
-    } else {
-      const el = evt && evt.currentTarget;
-      const r = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
-      menu.showAtPosition(r ? { x: r.left - 160, y: r.bottom + 4 } : { x: 120, y: 120 });
-    }
-    return menu;
+    return this.showMenu(items, anchor);
   }
 
   /**
@@ -3085,6 +4159,16 @@ class QuickMemoPlugin extends Plugin {
     }
   }
 
+  /** 换了目标笔记：回看开着就让视图重算「已插入」（按钮状态跟着笔记走） */
+  refreshInsertedForReview() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_QM)) {
+      const v = leaf.view;
+      if (v && v.state && v.state.reviewOpen && typeof v.rescanInserted === 'function') {
+        v.rescanInserted();
+      }
+    }
+  }
+
   async onload() {
     await this.loadSettings();
 
@@ -3155,6 +4239,28 @@ class QuickMemoPlugin extends Plugin {
         menu.addItem((i) =>
           i.setTitle('存为卡片').setIcon(ICON_ID).onClick(() => this.captureSelection(editor))
         );
+      })
+    );
+
+    // 记下当前在用的编辑器：焦点切到侧栏后 activeEditor 就是 null，
+    // 「插入到这篇」要靠这份缓存才知道往哪篇里插。
+    this._lastMdLeaf = null;
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', (leaf) => this.rememberEditorLeaf(leaf))
+    );
+    this.registerEvent(
+      this.app.workspace.on('file-open', () => {
+        let leaf = null;
+        try {
+          const ws = this.app.workspace;
+          leaf = ws.getMostRecentLeaf ? ws.getMostRecentLeaf(ws.rootSplit) : null;
+        } catch (e) {
+          leaf = null;
+        }
+        this.rememberEditorLeaf(leaf);
+        // 回看开着时换了笔记：目标变了，「已插入」必须按新笔记重算，
+        // 否则会显示成上一篇的结果（明明没插过却写着「已插入」）
+        this.refreshInsertedForReview();
       })
     );
 
@@ -3817,24 +4923,218 @@ class QuickMemoPlugin extends Plugin {
     );
   }
 
-  /** 当前活动编辑器（手机端工具栏调命令时也能拿到） */
-  currentEditor() {
-    // 优先用 activeEditor；旧版本或焦点在侧栏时退回到活动笔记视图
+  /**
+   * 阅读模式下的 MarkdownView 也挂着一个 editor 对象，但它没挂到 DOM 上，
+   * 对它 `replaceRange` 是**静默失败**：不报错、不落盘，按钮却照样变成「已插入」。
+   * 所以取编辑器之前必须把这层排掉——排掉之后「插入到这篇」会改走追加到文件末尾。
+   */
+  isPreviewView(view) {
     try {
-      const ae = this.app.workspace.activeEditor;
-      if (ae && ae.editor) return ae.editor;
+      if (!view) return false;
+      if (typeof view.getMode === 'function' && view.getMode() === 'preview') return true;
+      const cm = view.currentMode;
+      if (cm && cm.type === 'preview') return true;
+    } catch (e) {
+      /* 判断不了就不拦，免得把能用的编辑器也挡掉 */
+    }
+    return false;
+  }
+
+  /**
+   * 当前活动编辑器（手机端工具栏调命令时也能拿到）。
+   *
+   * 坑：点侧栏里的按钮会把活动叶子切成侧栏，`activeEditor` 立刻变 null ——
+   * 中间栏明明开着笔记，「插入到这篇」却报「先打开一篇笔记」，就是死在这一步。
+   * 所以拿不到时顺着「刚才用过的编辑器 → 主编辑区最近叶子 → 遍历 markdown 叶子」
+   * 往下找，全都失败才算真的没有。
+   */
+  currentEditor() {
+    const ws = this.app.workspace;
+
+    // 1. 焦点就在编辑器里：最准
+    try {
+      const ae = ws.activeEditor;
+      if (ae && ae.editor && !this.isPreviewView(ae)) return ae.editor;
     } catch (e) {
       /* 旧版本没有 activeEditor */
     }
+
+    // 2. 刚才还在用的那个编辑器（见 rememberEditorLeaf）
     try {
-      const view = this.app.workspace.getActiveViewOfType
-        ? this.app.workspace.getActiveViewOfType(MarkdownView)
-        : null;
-      if (view && view.editor) return view.editor;
+      const leaf = this._lastMdLeaf;
+      const ed = leaf && leaf.view && leaf.view.editor;
+      // 叶子可能已经被关掉了：拿已销毁的编辑器写进去是无声失败，宁可往下找
+      if (ed && !this.isPreviewView(leaf.view) && this.leafAlive(leaf)) return ed;
+    } catch (e) {
+      /* 没有记录 */
+    }
+
+    // 3. 主编辑区最近用过的叶子
+    try {
+      const leaf = ws.getMostRecentLeaf ? ws.getMostRecentLeaf(ws.rootSplit) : null;
+      const ed = leaf && leaf.view && leaf.view.editor;
+      if (ed && !this.isPreviewView(leaf.view)) return ed;
+    } catch (e) {
+      /* 老版本没有 getMostRecentLeaf */
+    }
+
+    // 4. 遍历 markdown 叶子：主编辑区优先，侧栏里的（拖到右边的笔记）垫底
+    try {
+      const leaves = ws.getLeavesOfType ? ws.getLeavesOfType('markdown') : [];
+      let side = null;
+      for (const leaf of leaves) {
+        const ed = leaf && leaf.view && leaf.view.editor;
+        if (!ed) continue;
+        if (this.isPreviewView(leaf.view)) continue;
+        const root = leaf.getRoot ? leaf.getRoot() : null;
+        if (!root || !ws.rootSplit || root === ws.rootSplit) return ed;
+        if (!side) side = ed;
+      }
+      if (side) return side;
+    } catch (e) {
+      /* 没有 markdown 叶子 */
+    }
+
+    // 5. 最老的那套 API
+    try {
+      const view = ws.getActiveViewOfType ? ws.getActiveViewOfType(MarkdownView) : null;
+      if (view && view.editor && !this.isPreviewView(view)) return view.editor;
     } catch (e) {
       /* 没有活动的 Markdown 视图 */
     }
+
     return null;
+  }
+
+  /**
+   * 记住最后一个主编辑区里的 markdown 叶子。
+   * 侧栏（本插件自己）被点中后 activeEditor 就是 null，插入卡片全靠这份缓存兜底；
+   * 拖到右侧栏的笔记不算「这篇」，免得插错地方。
+   */
+  rememberEditorLeaf(leaf) {
+    try {
+      const ed = leaf && leaf.view && leaf.view.editor;
+      if (!ed) return;
+      const ws = this.app.workspace;
+      const root = leaf.getRoot ? leaf.getRoot() : null;
+      if (root && ws.rootSplit && root !== ws.rootSplit) return;
+      this._lastMdLeaf = leaf;
+    } catch (e) {
+      /* 拿不到就保持原样 */
+    }
+  }
+
+  /** 叶子是否还在工作区里（关掉标签后 leaf.view 还挂着，编辑器却已经废了） */
+  leafAlive(leaf) {
+    try {
+      const ws = this.app.workspace;
+      if (!leaf || !leaf.view) return false;
+      if (typeof ws.getLeavesOfType !== 'function') return true;
+      return ws.getLeavesOfType('markdown').indexOf(leaf) >= 0;
+    } catch (e) {
+      // 判断不了就当它活着：总比明明有笔记却报「没打开」强
+      return true;
+    }
+  }
+
+  /** 当前这篇笔记（阅读视图里没有编辑器对象，只能从叶子上取 file） */
+  currentNoteFile() {
+    const ws = this.app.workspace;
+    try {
+      const f = ws.getActiveFile ? ws.getActiveFile() : null;
+      if (f) return f;
+    } catch (e) {
+      /* 老版本没有 getActiveFile */
+    }
+    const fromLeaf = (leaf) => {
+      try {
+        return (leaf && leaf.view && leaf.view.file) || null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const cached = fromLeaf(this._lastMdLeaf);
+    if (cached) return cached;
+    try {
+      const leaf = ws.getMostRecentLeaf ? ws.getMostRecentLeaf(ws.rootSplit) : null;
+      const f = fromLeaf(leaf);
+      if (f) return f;
+    } catch (e) {
+      /* 没有最近叶子 */
+    }
+    try {
+      const leaves = ws.getLeavesOfType ? ws.getLeavesOfType('markdown') : [];
+      for (const leaf of leaves) {
+        const f = fromLeaf(leaf);
+        if (f) return f;
+      }
+    } catch (e) {
+      /* 没有 markdown 叶子 */
+    }
+    return null;
+  }
+
+  /**
+   * 「插入到这篇」的唯一入口（回看用）。
+   * 有编辑器就插在光标处；没有（阅读视图/焦点在侧栏且编辑器已关）就追加到这篇末尾，
+   * 卡片引用是独立的一行内容，追加不会破坏原文。
+   * 返回 true 表示确实插进去了。
+   */
+  async insertIntoCurrentNote(card, plain) {
+    const ed = this.currentEditor();
+    const file = this.currentNoteFile();
+
+    // 先查重：这篇里已经有这张卡的块引用就别再插一遍。
+    // 回看换一批后同一张会再次出现，不查就会插出两三行一模一样的引用。
+    if (!plain && card.id) {
+      let text = '';
+      try {
+        text = ed && typeof ed.getValue === 'function' ? ed.getValue() : '';
+        if (!text && file) text = String(await this.app.vault.cachedRead(file));
+      } catch (e) {
+        text = '';
+      }
+      if (qmHasBlockRef(text, card.id)) {
+        new Notice('这张卡片已经在这篇笔记里了');
+        return true;
+      }
+    }
+
+    if (ed) {
+      let from = null;
+      let to = null;
+      try {
+        from = ed.getCursor('from');
+        to = ed.getCursor('to');
+      } catch (e) {
+        from = null;
+        to = null;
+      }
+      this.insertCardRef(card, ed, from, to, plain);
+      return true;
+    }
+
+    // 只往 markdown 里追加：往 PDF / 图片里写字是直接毁文件
+    const isNote = !!file && (file.extension === 'md' || /\.md$/i.test(String(file.path || '')));
+    if (!isNote) {
+      new Notice('先打开一篇笔记，再插入卡片');
+      return false;
+    }
+
+    const insert = this.cardRefText(card, plain);
+    try {
+      await this.app.vault.process(file, (data) => {
+        const text = String(data || '');
+        if (!text) return insert + '\n';
+        const head = text.endsWith('\n') ? text : text + '\n';
+        return head + '\n' + insert + '\n';
+      });
+      new Notice('已追加到「' + String(file.basename || file.name || '这篇') + '」末尾');
+      return true;
+    } catch (e) {
+      new Notice('插入失败：写不进这篇笔记');
+      return false;
+    }
   }
 
   /* ---------------- 卡片候选（;; 与插入面板共用） ---------------- */
@@ -3889,8 +5189,8 @@ class QuickMemoPlugin extends Plugin {
   /** 当前笔记的标签，用来给候选加权（同一主题的卡片更容易被想起来） */
   currentNoteTags() {
     try {
-      const ae = this.app.workspace.activeEditor;
-      const file = ae && ae.file;
+      // 不用 activeEditor：焦点在侧栏时它是 null，加权就白做了
+      const file = this.currentNoteFile();
       if (!file) return [];
       const cache = this.app.metadataCache.getFileCache(file);
       if (!cache) return [];
@@ -3996,20 +5296,25 @@ class QuickMemoPlugin extends Plugin {
   }
 
   /**
-   * 插进正文。plain=true 时插纯文本（只想抄原话），否则插块引用。
+   * 卡片要插进正文的那段文本（光标插入和追加到末尾共用一份，别两处各写一遍）。
+   * plain=true 时给纯文本（只想抄原话），否则给块引用。
    * 没有块 ID 的旧卡片退化成纯文本，别造一个跳不过去的链接。
    */
-  insertCardRef(card, editor, start, end, plain) {
-    let insert = '';
-    if (plain) {
-      insert = qmPasteText(card.body);
-    } else if (card.id) {
+  cardRefText(card, plain) {
+    if (plain) return qmPasteText(card.body);
+    if (card.id) {
       const bang = this.settings.blockRefEmbed ? '!' : '';
-      insert = bang + '[[' + this.linkTarget(card) + '#^' + card.id + ']]';
-    } else {
-      insert = qmPasteText(card.body);
-      new Notice('这张卡片没有块 ID，插入的是全文');
+      return bang + '[[' + this.linkTarget(card) + '#^' + card.id + ']]';
     }
+    new Notice('这张卡片没有块 ID，插入的是全文');
+    return qmPasteText(card.body);
+  }
+
+  /**
+   * 插进正文。plain=true 时插纯文本（只想抄原话），否则插块引用。
+   */
+  insertCardRef(card, editor, start, end, plain) {
+    const insert = this.cardRefText(card, plain);
     // 面板打开时编辑器会失焦，光标位置可能已经取不到；取不到就别炸
     try {
       const from = start || editor.getCursor('from');
@@ -4393,3 +5698,10 @@ class QuickMemoPlugin extends Plugin {
 module.exports = QuickMemoPlugin;
 // 便于本地测试直接构造弹窗；Obsidian 只关心 module.exports 本身
 module.exports.CaptureModal = CaptureModal;
+// 菜单落点是纯函数，单独放出来给测试算坐标
+module.exports.qmMenuPlace = qmMenuPlace;
+// 底部浮条要给状态栏让多少，也是纯函数
+module.exports.qmSelbarGap = qmSelbarGap;
+module.exports.qmStatusCover = qmStatusCover;
+module.exports.qmHasBlockRef = qmHasBlockRef;
+module.exports.qmShuffle = qmShuffle;

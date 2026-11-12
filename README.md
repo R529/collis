@@ -6,7 +6,7 @@
 
 ![Collis 侧边栏](assets/hero.png)
 
-*侧边栏输入框常驻；`Ctrl+Enter` 存下后成为一张带时间的卡片，被别的笔记引用时右上角亮起红点。*
+*侧栏只留两层：上面写，下面翻。`Ctrl+Enter` 存下就是一张带时间的卡片；被笔记引用过的卡片，时间后面亮一个小红点。*
 
 ## 它是什么
 
@@ -20,21 +20,23 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 
 | 特点 | 具体是什么 |
 | --- | --- |
-| **低摩擦记录** | 侧边栏常驻输入框，`Ctrl/Cmd+J` 全局唤出，两个键存下一张卡片 |
+| **低摩擦记录** | 侧栏常驻输入框，`Ctrl/Cmd+J` 全局唤出，两个键存下一张卡片 |
 | **选中即存** | 任意笔记里选中一段，`Ctrl/Cmd+Shift+C` 或右键「存为卡片」，只存文字、不写来源链接 |
 | **多行原样保留** | 换行写成缩进续行 + 硬换行，卡片视图与阅读视图都保持原分行 |
 | **本地纯 Markdown** | 按月一个文件，无私有格式、无自带云同步，卸载插件内容不动 |
 | **全库检索** | 跨所有月份，按标签、日期、时间、短语、关键词筛选且可叠加 |
+| **筛选不挤列表** | 标签筛选是一层浮窗，任何层级都能展开、能多选，关掉即回到原来的位置 |
+| **翻回旧卡片** | 回看一次翻 5 张很久没看的卡，「换一批」不会重样，看到有用的直接插进正在写的笔记 |
 | **写的时候随时调用** | `Ctrl/Cmd+Shift+K` 打开卡片面板，搜关键词、`#标签`、日期；`Enter` 插引用，`Shift+Enter` 插原话 |
 | **卡片可用于写作** | 卡片拖进笔记即成引用，也可从菜单复制 `![[文件#^id]]`；卡片改动，引用处同步 |
-| **被引用看得见** | 被引用时右上角红点提示；菜单里一行「被 N 篇笔记引用…」，点开列出全部引用，任选一条跳到引用位置 |
+| **被引用看得见** | 被引用时红点提示；菜单里一行「被 N 篇笔记引用…」，点开列出全部引用，任选一条跳到引用位置 |
 | **误删可恢复** | 二次确认、9 秒撤销、最近删除 50 条；手写时间行不会被当成卡片 |
 
 ## 功能明细
 
 ### 记录
 
-- **侧边栏输入框**：常驻在卡片视图顶部，输入框随内容自动长高（最高 200px 后内部滚动）
+- **侧栏输入框**：常驻在卡片视图顶部，输入框随内容自动长高（最高 200px 后内部滚动）；右下角可以手动拖高，拖过的高度这次会话内一直保留
 - **悬浮输入框**：`Ctrl/Cmd+J` 在任何页面唤出，`Esc` 关闭，不打断当前正在读或写的笔记
 - **两个键完成记录**：`Enter` 换行，`Ctrl+Enter` 保存，内容落在当天日期下
 - **选中即存**：在任意笔记里选中一段文字，`Ctrl/Cmd+Shift+C` 或右键菜单「存为卡片」，直接存成一张卡片，接着往下读就行。只存文字、**不带来源链接**——原文以后删了也不会留下死链；超过 300 字照存但会提示「偏长」。提示条 8 秒内可点撤销；手机上从工具栏调用同样有效（读最近一次选区）
@@ -43,16 +45,18 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 - **标签联想**：输入 `#` 弹出库内已有标签，按使用频率排序；`Tab` 或 ↑↓ + `Enter` 选中，直接按 `Enter` 仍是换行，不影响正常输入
 - **常用标签快选**：悬浮窗口中可直接点常用标签填入
 
-### 标签
+### 找回来：筛选浮层与搜索
 
-- `#标签` 是 Obsidian 原生标签，标签面板、全局搜索、`tag:` 查询本来就能用
-- `#父/子` 嵌套标签：标签栏把子标签聚合到父标签下，点父标签一次筛出整组
-- 标签栏每个标签带卡片数量，「无标签」一键筛出还没打标签的卡片
-- 标签栏可折叠，默认只显示前几组，尾部「更多 / 收起」，不挤压列表空间
+工具行第二个按钮（三条横线）打开筛选浮层。浮层是盖在列表上的一层，**不会把卡片区往下挤**；关掉后列表回到原来的位置和滚动高度。
 
-### 搜索与筛选
+- **引用情况**：全部 / 已引用 / 未引用，一眼筛出还没被任何笔记用过的卡片
+- **标签树**：`#父/子` 按层级展开，父标签的数字包含所有子标签；勾父标签会把子标签一起吸收，避免「已生效 3 项」其实只是一件事
+- **多选标签**：同时勾几个标签取并集，标签多了在窗内滚动，底部保留「清除筛选」
+- **无标签**：单独一行，和标签多选互斥
+- **生效计数**：底部实时显示「已生效 N 项」，搜索框里的关键词也算一项
+- **不改动数据**：筛选只影响眼前的列表，不写任何文件
 
-不用回忆内容存放在哪，输入记得的部分即可：
+不用回忆内容存放在哪，搜索框里输入记得的部分即可：
 
 | 你记得 | 就输入 |
 | --- | --- |
@@ -63,18 +67,29 @@ Collis 是 Obsidian 的速记卡片插件。侧边栏常驻一个输入框，也
 | 几个词 | 空格分开，须同时命中 |
 
 - 搜索覆盖**所有月份文件**，不只当月
-- 关键词、标签、日期、引用状态可叠加，叠加条件会在搜索框下方明示
+- 关键词、标签、日期、引用状态可叠加，命中的字在卡片里高亮
 - 日期标题可折叠，折叠状态记在设置里，重启后保留
-- 「引用」按钮在 全部 → 已引用 → 未引用 之间循环，可与右上角红点对照
+
+### 回看
+
+工具行的时钟按钮。回看是一次「翻旧账」：从很久没看的卡片里随机抽 **5 张**，全屏盖住列表，看完就退出来。
+
+- **只翻旧卡**：今天的卡片就在上面的列表里，不掺进来；旧卡不足 5 张时，用今天的补满
+- **换一批**：先把这一轮翻过的排除掉再抽，不会反复看到同样几张
+- **插入到这篇**：插到中间栏那篇笔记的光标处；如果那篇是阅读视图、没有可写的编辑器，就追加到这篇笔记的**末尾**，并提示「已追加到…」，不会假装成功
+- **不会插两次**：按钮状态按「这篇笔记里到底有没有这张卡」判断，同一张不会重复插入；你自己把那一行引用删掉后，它又会变回「插入到这篇」
+- **标签可点**：回看里点卡片上的标签，直接回到主界面并按这个标签筛选
+- **多选时不可用**：先退出多选再回看，避免两套状态互相打架
 
 ### 编辑与删除
 
 - **双击即改**：双击卡片原地进入编辑，多行内容按行数自动展开，`Ctrl+Enter` 保存、`Esc` 取消；手机上双击同样有效
 - **一次只改一张**：正在改一张时双击另一张，会先问「保存并继续 / 放弃修改 / 留在这条」，既不丢内容也不同时开两处编辑
-- **右上「···」菜单**：复制全文、复制链接、编辑、被几篇笔记引用、在文件中定位、只看被引用的卡片、删除都收在这里，平时不占版面
+- **右上「···」菜单**：复制全文、复制链接、编辑、被几篇笔记引用、在文件中定位、删除都收在这里，菜单贴着按钮弹出、平时不占版面
 - **删除**：菜单里二次确认后删除整张卡片（含所有续行）；被引用的卡片会先提示被几篇笔记引用
-- **批量删除**：进入选择模式勾选多条，跨月份的一次处理完
-- **撤销**：删除后 9 秒内可点提示条撤销；「最近删除」保留最近 50 条，可逐条恢复或清空
+- **多选**：工具行「···」里进入选择模式，点卡片即勾选，底部浮条显示「已选 N 条」；勾选时列表**停在原地**，不会每点一张就跳回顶部。浮条会避开 Obsidian 底部的状态栏
+- **批量删除**：勾选多条后一次删完，跨月份的也能一起处理
+- **撤销**：删除后 9 秒内可点提示条撤销；「最近删除」保留最近 50 条，可逐条恢复、单条彻底删除，或一键清空（都会再问一次）
 - **空标题清理**：某天卡片删空后，`## 日期` 标题一并移除；在编辑器里手删同样生效，光标所在日期段暂不处理
 - **严格识别卡片**：默认开启，只有带块 ID（`^abc123`）的条目才算卡片。正文里手写的 `- 12:30 开会` 只是普通文字，不会出现在列表里，也不会被删
 
@@ -161,6 +176,8 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 | **Multi-line kept intact** | Continuation lines are stored as indented lines with hard breaks, preserved in the card view and the reading view |
 | **Plain Markdown, no lock-in** | One file per month, no private format, no own sync; any editor can open it, removing the plugin leaves your notes untouched |
 | **Search across everything** | Every monthly file, filterable by tag, date, time, phrase or keyword, combinable |
+| **Filtering without shoving** | Tag filtering is an overlay: any nesting level expands, multi-select unions, closing it leaves the list where it was |
+| **Revisit old cards** | Review shows five cards you have not looked at in a while; shuffle does not repeat, and any of them can be dropped into the note you are writing |
 | **Summon cards while writing** | `Ctrl/Cmd+Shift+K` opens a picker: search by keyword, `#tag` or date; `Enter` inserts a reference, `Shift+Enter` inserts the text |
 | **Cards usable in writing** | Drag a card into any note to cite it, or copy `![[2026-11#^a1b2c3]]` from the menu; edit the card and every reference follows |
 | **References you can see** | A dot marks a cited card; one menu entry opens a panel listing every citing note, and any row jumps to that exact line |
@@ -168,17 +185,21 @@ Cards are ordinary Markdown list items stored in a folder you choose (default `0
 
 ### Capture
 
-Permanent sidebar input that grows with the text (scrolls past 200px). `Ctrl/Cmd+J` opens a floating input on any page (`Cmd` replaces `Ctrl` on macOS, resolved by Obsidian itself), `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
+Permanent sidebar input that grows with the text (scrolls past 200px), and can be dragged taller from its bottom-right corner. `Ctrl/Cmd+J` opens a floating input on any page (`Cmd` replaces `Ctrl` on macOS, resolved by Obsidian itself), `Esc` closes it. `Enter` for a new line, `Ctrl+Enter` to save under today's date. Unfinished text is kept for seven days and restored next time.
 
 Selecting text in any note and pressing `Ctrl/Cmd+Shift+C` (or right-click → Save as card) turns it into a card without leaving the note. Only the text is stored — no source link, so deleting the original later leaves no dead link. Selections over 300 characters still save, with a note that they are long, and the toast stays clickable for eight seconds to undo. On mobile the command falls back to your most recent selection, so tapping a toolbar button after the editor loses focus still works.
 
 Type `#` for autocomplete over tags already in your vault, ordered by how often you use them; `Tab` or ↑↓ + `Enter` selects, a plain `Enter` still makes a new line.
 
-### Tags
+### Filter and find
 
-Native `#tag` and nested `#parent/child`, children grouped under their parent. Tag bar shows counts, has an "untagged" filter, and collapses to save space.
+The second button in the toolbar opens the filter overlay. It sits **on top of** the list rather than pushing it down, and closing it restores the exact scroll position.
 
-### Find
+- **References**: all / cited / uncited — find the cards no note has used yet
+- **Tag tree**: `#parent/child` nests, parent counts include children, ticking a parent absorbs its children so "3 filters active" never means one thing twice
+- **Multi-select tags**: several tags union together; long trees scroll inside the panel with Clear filters pinned at the bottom
+- **Untagged**: a separate row, mutually exclusive with tag selection
+- **Live count**: "N active" at the bottom, counting the search box as one condition
 
 | You remember | You type |
 | --- | --- |
@@ -187,15 +208,23 @@ Native `#tag` and nested `#parent/child`, children grouped under their parent. T
 | a time | `13:41` |
 | a sentence | `"a whole phrase"` |
 
-Space-separated words must all match. Days collapse, and the collapsed state persists. The "Refs" button cycles all → cited → uncited, matching the dots on the cards.
+Space-separated words must all match, and matches are highlighted inside the card. Days collapse, and the collapsed state persists.
+
+### Review
+
+The clock button in the toolbar opens Review: five cards picked at random from the ones you have not looked at lately, shown full-screen. Today's cards stay in the list above; if there are fewer than five older cards, today's fill the gap. Shuffle excludes what this round already showed, so the same card does not keep coming back.
+
+"Insert into this note" drops the card at the cursor of the note in the middle pane. If that note is in reading view and has no writable editor, the card is appended to the end of the file instead, with a notice saying so — it never claims success silently. The button reflects what is actually in the note, so nothing is inserted twice, and deleting the reference line by hand flips it back to "Insert into this note".
 
 ### Edit and delete
 
-Double-click a card to edit it in place (`Ctrl+Enter` saves, `Esc` cancels) — works on mobile too. Double-clicking another card while editing asks whether to save and continue, discard, or stay, so text is never lost and two edits never run at once. Everything else — copy as text, copy the link, edit, how many notes cite it, reveal it in its file, delete — sits in the `···` menu at the card's top right. Batch delete across months, 9-second undo, last 50 deletions kept, empty `## date` headings cleaned up automatically. Strict card detection means a hand-typed `- 12:30 standup` is never treated as a card.
+Double-click a card to edit it in place (`Ctrl+Enter` saves, `Esc` cancels) — works on mobile too. Double-clicking another card while editing asks whether to save and continue, discard, or stay, so text is never lost and two edits never run at once. Everything else — copy as text, copy the link, edit, how many notes cite it, reveal it in its file, delete — sits in the `···` menu, which opens against the button instead of wherever the pointer happened to be.
+
+Select mode comes from the `···` menu in the toolbar: click cards to tick them, the bar at the bottom counts them, and the list stays put while you tick (it does not jump back to the top), with the bar keeping clear of Obsidian's status bar. Batch delete works across months. Deletions confirm first, undo stays available for nine seconds, and Recently deleted keeps the last fifty entries — restore one, delete one for good, or clear them all, each with a second confirmation. Empty `## date` headings are cleaned up automatically. Strict card detection means a hand-typed `- 12:30 standup` is never treated as a card.
 
 ### Copy and cite
 
-Drag any part of a card into a note to drop a reference — no handle to aim at — or copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). A dot at the card's top right means other notes cite it; one menu entry — “cited by N notes” — opens a panel listing each citing note with its folder and how many times it cites the card, and any row jumps to that exact line. `Ctrl/Cmd+Shift+K` opens a picker (the same shell as Quick Switcher) with one card per row: recent cards before you type, then filtering by keyword, `#tag`, `2026-11` or `"a whole phrase"`, with a character-overlap fallback when nothing matches literally and the matched characters highlighted. `Enter` inserts `[[file#^id]]`, `Shift+Enter` inserts the text without a link. "Reveal in file" opens the month file with the line selected. If you need to select part of the card's text, double-click to enter editing first. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
+Drag any part of a card into a note to drop a reference — no handle to aim at — or copy the card as plain text, or as `[[file#^id]]` / `![[file#^id]]` (configurable). A dot at the card's top right means other notes cite it; one menu entry — "cited by N notes" — opens a panel listing each citing note with its folder and how many times it cites the card, and any row jumps to that exact line. `Ctrl/Cmd+Shift+K` opens a picker (the same shell as Quick Switcher) with one card per row: recent cards before you type, then filtering by keyword, `#tag`, `2026-11` or `"a whole phrase"`, with a character-overlap fallback when nothing matches literally and the matched characters highlighted. `Enter` inserts `[[file#^id]]`, `Shift+Enter` inserts the text without a link. "Reveal in file" opens the month file with the line selected. If you need to select part of the card's text, double-click to enter editing first. Bare `https://…` is clickable; wikilinks and Markdown stay plain text.
 
 ### Data
 
@@ -218,9 +247,13 @@ Settings → Community plugins → Browse → **Collis** → Install → Enable.
 | --- | --- |
 | Card folder | Defaults to `00-Inbox/速记`, created if missing |
 | Common tags | Affects suggestion order only |
-| Max cards rendered | Rendering limit only; search still covers everything |
-| Clean up empty date headings | On by default, including manual deletions |
-| Strict card detection | On by default; only entries with a block ID count |
-| Block reference style | Off: `[[file#^id]]`. On: `![[file#^id]]` |
+| Max rendered cards | Rendering performance only, not search scope |
+| Prune empty date headings | On by default; also applies when you delete lines by hand in the editor |
+| Strict card detection | On by default; only entries with a block ID count as cards |
+| Block references as embeds | Off: copies `[[file#^id]]`; on: copies `![[file#^id]]` |
 
-Requires Obsidian 1.4.0+, desktop and mobile, fully offline, MIT licensed.
+### Compatibility and privacy
+
+Obsidian 1.4.0 or newer, desktop and mobile. The plugin runs entirely offline: no network calls, no telemetry, no account, and it writes nothing outside its own folder and data file.
+
+MIT License — see [LICENSE](./LICENSE). Issues and ideas: [GitHub Issues](https://github.com/R529/collis/issues).
