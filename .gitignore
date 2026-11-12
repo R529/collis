@@ -31,3 +31,4 @@ node_modules/
 .obsidian/
 *.local
 *.db
+.rel_id
