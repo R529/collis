@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号，须与 manifest.json 的 version 一致（例如 2.0.1）"
+        required: true
 
 permissions:
   contents: write
@@ -14,11 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check tag matches manifest version
         run: |
           version=$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")
-          if [ "$version" != "${GITHUB_REF_NAME}" ]; then
-            echo "manifest.json 的 version 是 $version，tag 是 ${GITHUB_REF_NAME}，两者必须一致" >&2
+          if [ "$version" != "${{ steps.v.outputs.version }}" ]; then
+            echo "manifest.json 的 version 是 $version，目标是 ${{ steps.v.outputs.version }}，两者必须一致" >&2
             exit 1
           fi
 
@@ -26,7 +40,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          extra=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            extra="--target main"
+          fi
+          gh release create "${{ steps.v.outputs.version }}" \
             main.js manifest.json styles.css \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+            --title "${{ steps.v.outputs.version }}" \
+            --generate-notes \
+            $extra
