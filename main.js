@@ -797,11 +797,17 @@ function parseCards(content, filePath, opts) {
 }
 
 /**
- * 找出「带块 ID 但当前规则下不显示」的孤儿段（纯函数，只读）。
+ * 找出「文件里有、但当前规则下不显示」的孤儿段（纯函数，只读）。
  *
- * 块边界以顶格 `- `/`* ` 行或日期标题为准：用户手写时没缩进的段落
- * （例如「你主要漏了这几类角度：」）仍算在同一段里，孤儿的 ^id 才不会被割裂。
- * 已经被可见卡片覆盖的行一律整段跳过——宁可漏报，也绝不动正常卡片。
+ * 覆盖所有形态，不以「有没有 ^id」为门槛：
+ *   - 有时间没 ID（严格模式下被挡掉）
+ *   - 没时间有 ID（首行过不了 QM_CARD_RE）
+ *   - 没时间也没 ID（用户手写的一条，例如「- 哈哈哈哈」）
+ *   - 时间格式不对（如「- 1、」「- 9:5」）
+ *
+ * 做法：正向扫描每个「顶格 `- `/`* ` 列表项」块，块边界以顶格列表项或
+ * 日期标题为准（用户手写的顶格文字不算断裂，例如「你主要漏了这几类角度：」）。
+ * 块内只要有一行被可见卡片覆盖，就整块跳过——绝不碰正常卡片。
  */
 function qmFindOrphans(content, filePath, opts) {
   const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
@@ -813,30 +819,27 @@ function qmFindOrphans(content, filePath, opts) {
   const headerRe = /^##[ \t]+\d{4}-\d{2}-\d{2}[ \t]*$/;
   const itemRe = /^[-*][ \t]+/;
   const idRe = /[ \t]\^([A-Za-z0-9-]{4,})[ \t]*$/;
+  const timeRe = /^[-*][ \t]+\d{1,2}:\d{1,2}[ \t]/;
   const out = [];
-  const used = new Set();
 
-  for (let i = 0; i < lines.length; i++) {
-    if (covered.has(i) || !idRe.test(lines[i])) continue;
+  for (let start = 0; start < lines.length; start++) {
+    if (!itemRe.test(lines[start]) || covered.has(start)) continue;
 
-    let start = i;
-    while (start > 0 && !headerRe.test(lines[start]) && !itemRe.test(lines[start])) start--;
-    if (!itemRe.test(lines[start]) || used.has(start)) continue;
-
-    let end = i;
+    let end = start;
     for (let j = start + 1; j < lines.length; j++) {
       if (headerRe.test(lines[j]) || itemRe.test(lines[j])) break;
       if (lines[j].trim()) end = j;
     }
+    // 与可见卡片有任何重叠就整块跳过，宁可漏报也不动正常卡片
     let overlap = false;
     for (let j = start; j <= end; j++) {
       if (covered.has(j)) { overlap = true; break; }
     }
-    if (overlap) continue;
+    if (overlap) { start = end; continue; }
 
-    used.add(start);
-    let mainId = (lines[i].match(idRe) || [])[1] || '';
-    for (let j = i + 1; j <= end; j++) {
+    // 块内所有 ^id，取最后一个为主 ID（可能一个都没有）
+    let mainId = '';
+    for (let j = start; j <= end; j++) {
       const mm = lines[j].match(idRe);
       if (mm) mainId = mm[1];
     }
@@ -849,12 +852,54 @@ function qmFindOrphans(content, filePath, opts) {
     out.push({
       filePath, date, id: mainId,
       lineStart: start, lineEnd: end,
-      reason: /^[-*][ \t]+\d{1,2}:\d{2}[ \t]+/.test(lines[start]) ? 'NO_TIME' : 'ORPHAN_ID',
+      // HAS_TIME_NO_ID：首行有时间但仍不显示（缺 ID / 时间格式不合规）
+      // NO_TIME：首行没有 HH:mm（含完全手写的条目）
+      reason: timeRe.test(lines[start]) ? 'HAS_TIME_NO_ID' : 'NO_TIME',
       lines: slice,
       preview: slice.join(' ').replace(idRe, '').replace(/[ \t]+/g, ' ').trim().slice(0, 64),
     });
+    start = end; // 整块已处理，跳到块尾
   }
   return out;
+}
+
+/** 孤儿首行的「正文指纹」：去掉列表符、时间、块 ID，用于写盘前重新定位 */
+function qmOrphanFingerprint(o) {
+  const first = o && Array.isArray(o.lines) && o.lines.length ? String(o.lines[0] || '') : '';
+  return first
+    .replace(/^[-*][ \t]+/, '')
+    .replace(/^\d{1,2}:\d{1,2}[ \t]+/, '')
+    .replace(/[ \t]*\^([A-Za-z0-9-]{4,})[ \t]*$/, '')
+    .replace(/[ \t]+$/, '')
+    .trim();
+}
+
+/**
+ * 在刚读到的内容里重新定位孤儿：ID 优先，其次首行正文，同文用行号消歧。
+ * 无 ID 的条目 id 都是空串，不能只按 id 匹配，否则多条会全撞到第一条。
+ */
+function qmMatchOrphan(list, item) {
+  if (!Array.isArray(list) || !item) return null;
+  if (item.id) {
+    const byId = list.filter((o) => o.id === item.id);
+    if (byId.length === 1) return byId[0];
+    if (byId.length > 1) {
+      const fp = qmOrphanFingerprint(item);
+      const same = byId.filter((o) => qmOrphanFingerprint(o) === fp);
+      if (same.length) return typeof item.lineStart === 'number'
+        ? same.sort((a, b) => Math.abs(a.lineStart - item.lineStart) - Math.abs(b.lineStart - item.lineStart))[0]
+        : same[0];
+    }
+  }
+  const fp = qmOrphanFingerprint(item);
+  if (fp) {
+    const byBody = list.filter((o) => qmOrphanFingerprint(o) === fp);
+    if (byBody.length === 1) return byBody[0];
+    if (byBody.length > 1 && typeof item.lineStart === 'number') {
+      return byBody.sort((a, b) => Math.abs(a.lineStart - item.lineStart) - Math.abs(b.lineStart - item.lineStart))[0];
+    }
+  }
+  return null;
 }
 
 /** 恢复时的默认时间：同一天最后一张卡的时间 +1 分钟；当天没卡就用 00:00 */
@@ -876,20 +921,25 @@ function qmSuggestOrphanTime(content, filePath, orphan, opts) {
  * 把孤儿段原地重建为插件标准卡片行：首行 `- HH:mm …`，续行两空格缩进，
  * 块 ID 留在最后一行。所有原有 ^id 都会保留，避免别的笔记里的引用断掉。
  */
-function qmRebuildOrphanLines(orphan, time) {
+function qmRebuildOrphanLines(orphan, time, newId) {
   const src = Array.isArray(orphan && orphan.lines) ? orphan.lines.slice() : [];
   const ids = [];
   const body = src.map((l, idx) => {
     let s = String(l == null ? '' : l);
     s = s.replace(/[ \t]*\^([A-Za-z0-9-]{4,})[ \t]*$/, (mm, id) => { ids.push(id); return ''; });
     s = idx === 0 ? s.replace(/^[-*][ \t]+/, '') : s.replace(/^ {2}|^\t/, '');
+    // 首行若已有时间前缀（HAS_TIME_NO_ID 形态），先去掉，避免恢复后时间重复
+    if (idx === 0) s = s.replace(/^\d{1,2}:\d{1,2}[ \t]+/, '');
     return s.replace(/[ \t]+$/, '');
   });
   while (body.length && !body[0].trim()) body.shift();
   while (body.length && !body[body.length - 1].trim()) body.pop();
   if (!body.length) return null;
   const t = /^\d{1,2}:\d{2}$/.test(String(time || '')) ? padTime(time) : '00:00';
-  return qmFormatEntry(t, body, ids.length ? ids[ids.length - 1] : '');
+  // 调用方传入的 ID 优先（它已处理「沿用原 ID / 冲突换新 / 无 ID 新造」）；
+  // 没传才退回块内最后一个 ID。纯函数不随机，ID 生成交给调用方。
+  const id = String(newId || '') || (ids.length ? ids[ids.length - 1] : '');
+  return qmFormatEntry(t, body, id);
 }
 
 /**
@@ -1656,7 +1706,7 @@ class OrphanModal extends Modal {
         main.createDiv({ cls: 'qm-orphan-body', text: it.preview || '（空）' });
         main.createDiv({
           cls: 'qm-orphan-meta',
-          text: (it.date || '未分组') + ' · 第 ' + (it.lineStart + 1) + ' 行 · ^' + it.id,
+          text: (it.date || '未分组') + ' · 第 ' + (it.lineStart + 1) + ' 行 · ' + (it.id ? '^' + it.id : '无块 ID'),
         });
 
         const acts = row.createDiv({ cls: 'qm-orphan-acts' });
@@ -4966,7 +5016,7 @@ class QuickMemoPlugin extends Plugin {
   /** 写盘前在「刚读到的内容」里重新定位，防止读盘期间文件被改过 */
   _relocateOrphan(content, item, opts) {
     const list = qmFindOrphans(content, item.filePath, opts);
-    return list.filter((o) => o.id === item.id)[0] || null;
+    return qmMatchOrphan(list, item);
   }
 
   /**
@@ -4988,8 +5038,6 @@ class QuickMemoPlugin extends Plugin {
       if (!hit) { reason = '这段内容已经被改过，请重新检查'; return data; }
 
       usedTime = qmSuggestOrphanTime(text, item.filePath, hit, { time });
-      const lines = qmRebuildOrphanLines(hit, usedTime);
-      if (!lines) { reason = '这段内容是空的，无法恢复'; return data; }
 
       // 段外的 ID 才算冲突：段内自己的 ID 要保留
       const others = new Set();
@@ -4999,14 +5047,17 @@ class QuickMemoPlugin extends Plugin {
           for (const id of qmCollectIds(l)) others.add(id);
         }
       });
-      const tail = lines.length - 1;
-      const main = (String(lines[tail]).match(/\^([A-Za-z0-9-]+)[ \t]*$/) || [])[1];
-      if (main && others.has(main)) {
+
+      // 无块 ID 的条目要新造一个，且避开段外所有 ID；有 ID 的沿用（引用不断）
+      let newId = hit.id || '';
+      if (!newId || others.has(newId)) {
         let nid = genId();
         let guardN = 0;
         while (others.has(nid) && guardN++ < 50) nid = genId();
-        lines[tail] = String(lines[tail]).replace(/\^[A-Za-z0-9-]+[ \t]*$/, '^' + nid);
+        newId = nid;
       }
+      const lines = qmRebuildOrphanLines(hit, usedTime, newId);
+      if (!lines) { reason = '这段内容是空的，无法恢复'; return data; }
 
       const arr = all.slice();
       arr.splice(hit.lineStart, hit.lineEnd - hit.lineStart + 1, ...lines);
@@ -5091,7 +5142,7 @@ class QuickMemoPlugin extends Plugin {
           const ranges = [];
           const used = new Set();
           for (const it of group) {
-            const hit = live.filter((o) => o.id === it.id)[0];
+            const hit = qmMatchOrphan(live, it);
             if (!hit || used.has(hit.lineStart)) { failed.push(it); continue; }
             used.add(hit.lineStart);
             ranges.push(hit);
@@ -6093,6 +6144,8 @@ module.exports.qmStatusCover = qmStatusCover;
 module.exports.qmHasBlockRef = qmHasBlockRef;
 module.exports.qmShuffle = qmShuffle;
 module.exports.qmFindOrphans = qmFindOrphans;
+module.exports.qmMatchOrphan = qmMatchOrphan;
+module.exports.qmOrphanFingerprint = qmOrphanFingerprint;
 module.exports.qmSuggestOrphanTime = qmSuggestOrphanTime;
 module.exports.qmRebuildOrphanLines = qmRebuildOrphanLines;
 
