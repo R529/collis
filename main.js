@@ -797,6 +797,102 @@ function parseCards(content, filePath, opts) {
 }
 
 /**
+ * 找出「带块 ID 但当前规则下不显示」的孤儿段（纯函数，只读）。
+ *
+ * 块边界以顶格 `- `/`* ` 行或日期标题为准：用户手写时没缩进的段落
+ * （例如「你主要漏了这几类角度：」）仍算在同一段里，孤儿的 ^id 才不会被割裂。
+ * 已经被可见卡片覆盖的行一律整段跳过——宁可漏报，也绝不动正常卡片。
+ */
+function qmFindOrphans(content, filePath, opts) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+  const strict = !(opts && opts.strict === false);
+  const visible = parseCards(content, filePath, { strict });
+  const covered = new Set();
+  for (const c of visible) for (let i = c.lineIndex; i <= c.lineEnd; i++) covered.add(i);
+
+  const headerRe = /^##[ \t]+\d{4}-\d{2}-\d{2}[ \t]*$/;
+  const itemRe = /^[-*][ \t]+/;
+  const idRe = /[ \t]\^([A-Za-z0-9-]{4,})[ \t]*$/;
+  const out = [];
+  const used = new Set();
+
+  for (let i = 0; i < lines.length; i++) {
+    if (covered.has(i) || !idRe.test(lines[i])) continue;
+
+    let start = i;
+    while (start > 0 && !headerRe.test(lines[start]) && !itemRe.test(lines[start])) start--;
+    if (!itemRe.test(lines[start]) || used.has(start)) continue;
+
+    let end = i;
+    for (let j = start + 1; j < lines.length; j++) {
+      if (headerRe.test(lines[j]) || itemRe.test(lines[j])) break;
+      if (lines[j].trim()) end = j;
+    }
+    let overlap = false;
+    for (let j = start; j <= end; j++) {
+      if (covered.has(j)) { overlap = true; break; }
+    }
+    if (overlap) continue;
+
+    used.add(start);
+    let mainId = (lines[i].match(idRe) || [])[1] || '';
+    for (let j = i + 1; j <= end; j++) {
+      const mm = lines[j].match(idRe);
+      if (mm) mainId = mm[1];
+    }
+    let date = '';
+    for (let j = start; j >= 0; j--) {
+      const hm = lines[j].match(/^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*$/);
+      if (hm) { date = hm[1]; break; }
+    }
+    const slice = lines.slice(start, end + 1);
+    out.push({
+      filePath, date, id: mainId,
+      lineStart: start, lineEnd: end,
+      reason: /^[-*][ \t]+\d{1,2}:\d{2}[ \t]+/.test(lines[start]) ? 'NO_TIME' : 'ORPHAN_ID',
+      lines: slice,
+      preview: slice.join(' ').replace(idRe, '').replace(/[ \t]+/g, ' ').trim().slice(0, 64),
+    });
+  }
+  return out;
+}
+
+/** 恢复时的默认时间：同一天最后一张卡的时间 +1 分钟；当天没卡就用 00:00 */
+function qmSuggestOrphanTime(content, filePath, orphan, opts) {
+  const want = String((opts && opts.time) || '').trim();
+  const wm = want.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (wm) return wm[1].padStart(2, '0') + ':' + wm[2].padStart(2, '0');
+  const cards = parseCards(content, filePath, { strict: false })
+    .filter((c) => !orphan.date || c.date === orphan.date);
+  const times = cards.map((c) => c.time).filter((t) => /^\d{2}:\d{2}$/.test(t)).sort();
+  if (!times.length) return '00:00';
+  const p = times[times.length - 1].split(':').map(Number);
+  let h = p[0], m = p[1] + 1;
+  if (m >= 60) { m = 0; h = (h + 1) % 24; }
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+/**
+ * 把孤儿段原地重建为插件标准卡片行：首行 `- HH:mm …`，续行两空格缩进，
+ * 块 ID 留在最后一行。所有原有 ^id 都会保留，避免别的笔记里的引用断掉。
+ */
+function qmRebuildOrphanLines(orphan, time) {
+  const src = Array.isArray(orphan && orphan.lines) ? orphan.lines.slice() : [];
+  const ids = [];
+  const body = src.map((l, idx) => {
+    let s = String(l == null ? '' : l);
+    s = s.replace(/[ \t]*\^([A-Za-z0-9-]{4,})[ \t]*$/, (mm, id) => { ids.push(id); return ''; });
+    s = idx === 0 ? s.replace(/^[-*][ \t]+/, '') : s.replace(/^ {2}|^\t/, '');
+    return s.replace(/[ \t]+$/, '');
+  });
+  while (body.length && !body[0].trim()) body.shift();
+  while (body.length && !body[body.length - 1].trim()) body.pop();
+  if (!body.length) return null;
+  const t = /^\d{1,2}:\d{2}$/.test(String(time || '')) ? padTime(time) : '00:00';
+  return qmFormatEntry(t, body, ids.length ? ids[ids.length - 1] : '');
+}
+
+/**
  * 在「刚读到的文件内容」里重新定位卡片，写入前必须先过这一关。
  * 顺序：块 ID 精确 → 同日期段第 N 条同文 → 正文唯一匹配。
  * 只有唯一命中才返回，否则返回 null：宁可不写，也不动错对象。
@@ -1515,6 +1611,74 @@ class TrashModal extends Modal {
       };
     }
 
+    const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
+    close.onclick = () => this.close();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/** 孤儿卡片检查：列出「有块 ID 但不显示」的段，逐条恢复或删除 */
+class OrphanModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this.items = [];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    if (this.modalEl && this.modalEl.addClass) this.modalEl.addClass('qm-orphan-modal');
+    contentEl.createEl('div', { text: '检查孤儿卡片', cls: 'qm-modal-title' });
+    contentEl.createEl('div', {
+      text: '这些段落带块 ID（^xxxx），但首行缺少 HH:mm 时间或 ID 落在卡片块外，所以不会出现在卡片列表。' +
+        '「恢复卡片」会原地改成标准格式并保留原块 ID，笔记里的引用不会断；「删除」会放进「最近删除」，可以恢复。',
+      cls: 'qm-hint',
+    });
+
+    const list = contentEl.createDiv({ cls: 'qm-orphan-list' });
+    this.items = await this.plugin.findOrphans();
+    if (!this.items.length) {
+      list.createEl('div', { text: '没有发现孤儿卡片。', cls: 'qm-hint' });
+    } else {
+      for (const it of this.items) {
+        const row = list.createDiv({ cls: 'qm-orphan-item' });
+        const main = row.createDiv({ cls: 'qm-orphan-main' });
+        main.createDiv({ cls: 'qm-orphan-body', text: it.preview || '（空）' });
+        main.createDiv({
+          cls: 'qm-orphan-meta',
+          text: (it.date || '未分组') + ' · 第 ' + (it.lineStart + 1) + ' 行 · ^' + it.id,
+        });
+
+        const acts = row.createDiv({ cls: 'qm-orphan-acts' });
+        const restore = acts.createEl('button', { text: '恢复卡片', cls: 'qm-mini-btn is-primary' });
+        restore.setAttr('title', '按当前规则改成标准卡片并显示在列表里');
+        restore.onclick = async () => {
+          const ok = await this.plugin.restoreOrphan(it);
+          if (ok) this.onOpen();
+        };
+
+        const drop = acts.createEl('button', { text: '删除', cls: 'qm-mini-btn qm-mini-btn-danger' });
+        drop.setAttr('title', '彻底清理这一段（可在最近删除里恢复）');
+        drop.onclick = () => {
+          new ConfirmModal(
+            this.app,
+            '删除这段孤儿卡片？',
+            async () => {
+              const ok = await this.plugin.deleteOrphan(it);
+              if (ok) this.onOpen();
+            },
+            '这一段会从速记文件里移除，但可以在「最近删除」里恢复。',
+            '删除'
+          ).open();
+        };
+      }
+    }
+
+    const bar = contentEl.createDiv({ cls: 'qm-trash-bar' });
     const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
     close.onclick = () => this.close();
   }
@@ -2896,6 +3060,11 @@ class CardsView extends ItemView {
         title: '打开本月文件',
         icon: 'file-text',
         onClick: () => this.plugin.openCurrentMonthFile(),
+      },
+      {
+        title: '检查孤儿卡片',
+        icon: 'search-check',
+        onClick: () => new OrphanModal(this.app, this.plugin).open(),
       },
     ];
     return this.showMenu(items, anchor);
@@ -4746,6 +4915,126 @@ class QuickMemoPlugin extends Plugin {
     );
   }
 
+  /* ---------------- 孤儿卡片：只读扫描 + 有确认的处置 ---------------- */
+
+  /** 扫描当前托管文件夹里所有「有块 ID 但不显示」的段 */
+  async findOrphans() {
+    const out = [];
+    const opts = { strict: this.settings.strictCardId !== false };
+    for (const f of this.listCardFiles()) {
+      let content = '';
+      try {
+        content = await this.app.vault.cachedRead(f);
+      } catch (e) {
+        continue;
+      }
+      for (const o of qmFindOrphans(content, f.path, opts)) out.push(o);
+    }
+    return out;
+  }
+
+  /** 写盘前在「刚读到的内容」里重新定位，防止读盘期间文件被改过 */
+  _relocateOrphan(content, item, opts) {
+    const list = qmFindOrphans(content, item.filePath, opts);
+    return list.filter((o) => o.id === item.id)[0] || null;
+  }
+
+  /**
+   * 恢复：把孤儿段原地改写成标准卡片格式。
+   * 块 ID 能留就留（笔记里的 [[#^id]] 引用靠它），只有和别处冲突才换新。
+   */
+  async restoreOrphan(item, time) {
+    const opts = { strict: this.settings.strictCardId !== false };
+    let done = false;
+    let written = null;
+    let reason = '';
+    let usedTime = '';
+    const target = await this.ensureFileAt(item.filePath);
+    await this.app.vault.process(target, (data) => {
+      const guard = this.checkManagedFile(this.app.vault.getAbstractFileByPath(item.filePath), item.date);
+      if (!guard.ok) { reason = guard.reason; return data; }
+      const text = String(data || '');
+      const hit = this._relocateOrphan(text, item, opts);
+      if (!hit) { reason = '这段内容已经被改过，请重新检查'; return data; }
+
+      usedTime = qmSuggestOrphanTime(text, item.filePath, hit, { time });
+      const lines = qmRebuildOrphanLines(hit, usedTime);
+      if (!lines) { reason = '这段内容是空的，无法恢复'; return data; }
+
+      // 段外的 ID 才算冲突：段内自己的 ID 要保留
+      const others = new Set();
+      const all = text.replace(/\r\n?/g, '\n').split('\n');
+      all.forEach((l, i) => {
+        if (i < hit.lineStart || i > hit.lineEnd) {
+          for (const id of qmCollectIds(l)) others.add(id);
+        }
+      });
+      const tail = lines.length - 1;
+      const main = (String(lines[tail]).match(/\^([A-Za-z0-9-]+)[ \t]*$/) || [])[1];
+      if (main && others.has(main)) {
+        let nid = genId();
+        let guardN = 0;
+        while (others.has(nid) && guardN++ < 50) nid = genId();
+        lines[tail] = String(lines[tail]).replace(/\^[A-Za-z0-9-]+[ \t]*$/, '^' + nid);
+      }
+
+      const arr = all.slice();
+      arr.splice(hit.lineStart, hit.lineEnd - hit.lineStart + 1, ...lines);
+      done = true;
+      written = arr.join('\n');
+      return written;
+    });
+
+    if (!done) {
+      new Notice('没有恢复：' + (reason || '目标文件不可写'), 8000);
+      return false;
+    }
+    this.rememberWrite(item.filePath, written);
+    this.notifyViews({ path: item.filePath, content: written });
+    new Notice('已恢复为卡片（时间 ' + usedTime + '）', 8000);
+    return true;
+  }
+
+  /** 删除：整段移除并进「最近删除」，可以恢复；空日期段顺手收掉 */
+  async deleteOrphan(item) {
+    const opts = { strict: this.settings.strictCardId !== false };
+    let done = false;
+    let written = null;
+    let reason = '';
+    const removed = [];
+    const target = await this.ensureFileAt(item.filePath);
+    await this.app.vault.process(target, (data) => {
+      const guard = this.checkManagedFile(this.app.vault.getAbstractFileByPath(item.filePath), item.date);
+      if (!guard.ok) { reason = guard.reason; return data; }
+      const text = String(data || '');
+      const hit = this._relocateOrphan(text, item, opts);
+      if (!hit) { reason = '这段内容已经被改过，请重新检查'; return data; }
+
+      const all = text.replace(/\r\n?/g, '\n').split('\n');
+      removed.push({
+        date: hit.date,
+        time: '',
+        body: hit.preview,
+        lines: hit.lines.slice(),
+        filePath: item.filePath,
+      });
+      all.splice(hit.lineStart, hit.lineEnd - hit.lineStart + 1);
+      done = true;
+      written = qmPruneEmptyDateSections(all.join('\n'), hit.date);
+      return written;
+    });
+
+    if (!done) {
+      new Notice('没有删除：' + (reason || '目标文件不可写'), 8000);
+      return false;
+    }
+    if (removed.length) await this.pushTrashMany(removed);
+    this.rememberWrite(item.filePath, written);
+    this.notifyViews({ path: item.filePath, content: written });
+    new Notice('已删除 · 可在「最近删除」恢复', 7000);
+    return true;
+  }
+
   /* ---------------- 空日期标题自动清理 ---------------- */
 
   /** 光标正停在哪个日期段里：这一段本轮不清理，避免打断正在写的内容 */
@@ -5705,3 +5994,8 @@ module.exports.qmSelbarGap = qmSelbarGap;
 module.exports.qmStatusCover = qmStatusCover;
 module.exports.qmHasBlockRef = qmHasBlockRef;
 module.exports.qmShuffle = qmShuffle;
+module.exports.qmFindOrphans = qmFindOrphans;
+module.exports.qmSuggestOrphanTime = qmSuggestOrphanTime;
+module.exports.qmRebuildOrphanLines = qmRebuildOrphanLines;
+
+/* nosourcemap */

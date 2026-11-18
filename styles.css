@@ -21,7 +21,8 @@
 .modal.qm-modal,
 .modal.qm-modal-wide,
 .modal.qm-picker-modal,
-.modal.qm-trash-modal {
+.modal.qm-trash-modal,
+.modal.qm-orphan-modal {
   /* 侧栏底色：有的主题把 secondary 也设成接近纯白（Lomes 就是一例），
      白面板就浮不起来。这里混 4% 文字色，压出原型那种米灰底。 */
   --qm-pane-bg: var(--background-secondary);
@@ -65,7 +66,8 @@
 .theme-dark .modal.qm-modal,
 .theme-dark .modal.qm-modal-wide,
 .theme-dark .modal.qm-picker-modal,
-.theme-dark .modal.qm-trash-modal {
+.theme-dark .modal.qm-trash-modal,
+.modal.qm-orphan-modal {
   --qm-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18);
   --qm-shadow-pop: 0 14px 36px rgba(0, 0, 0, 0.5);
 }
@@ -1448,7 +1450,8 @@
 
 /* ---------- 最近删除 ---------- */
 
-.modal.qm-trash-modal {
+.modal.qm-trash-modal,
+.modal.qm-orphan-modal {
   width: 480px;
   max-width: 92vw;
 }
@@ -1489,6 +1492,49 @@
 }
 
 .qm-trash-acts {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+/* ---------- 孤儿卡片检查 ---------- */
+
+.qm-orphan-list {
+  max-height: 46vh;
+  margin: 2px 0 8px 0;
+  overflow-y: auto;
+}
+
+.qm-orphan-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.qm-orphan-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.qm-orphan-body {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.3px;
+  line-height: 1.55;
+  color: var(--text-normal);
+}
+
+.qm-orphan-meta {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.qm-orphan-acts {
   flex: 0 0 auto;
   display: flex;
   gap: 6px;
@@ -1735,7 +1781,8 @@
 .theme-dark .modal.qm-modal,
 .theme-dark .modal.qm-modal-wide,
 .theme-dark .modal.qm-picker-modal,
-.theme-dark .modal.qm-trash-modal {
+.theme-dark .modal.qm-trash-modal,
+.modal.qm-orphan-modal {
   /* 卡片比侧栏底色亮一档：1.04:1 → 1.21:1，深色下才有「浮起来」的层次 */
   --qm-card-bg: color-mix(in srgb, var(--text-normal) 8%, var(--qm-pane-bg));
   /* 悬停再亮一档：相对卡片 1.11:1，相对底色 1.34:1 */
@@ -1748,7 +1795,8 @@
 .theme-light .modal.qm-modal,
 .theme-light .modal.qm-modal-wide,
 .theme-light .modal.qm-picker-modal,
-.theme-light .modal.qm-trash-modal {
+.theme-light .modal.qm-trash-modal,
+.modal.qm-orphan-modal {
   --qm-card-hover: color-mix(in srgb, var(--text-normal) 4%, var(--qm-card-bg));
 }
 
