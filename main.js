@@ -1634,8 +1634,7 @@ class OrphanModal extends Modal {
     if (this.modalEl && this.modalEl.addClass) this.modalEl.addClass('qm-orphan-modal');
     contentEl.createEl('div', { text: '检查孤儿卡片', cls: 'qm-modal-title' });
     contentEl.createEl('div', {
-      text: '这些段落带块 ID（^xxxx），但首行缺少 HH:mm 时间或 ID 落在卡片块外，所以不会出现在卡片列表。' +
-        '「恢复卡片」会原地改成标准格式并保留原块 ID，笔记里的引用不会断；「删除」会放进「最近删除」，可以恢复。',
+      text: '「恢复卡片」会把它变成正常卡片并保留原来的引用；「删除」会移入「最近删除」，可以恢复。',
       cls: 'qm-hint',
     });
 
@@ -1679,6 +1678,23 @@ class OrphanModal extends Modal {
     }
 
     const bar = contentEl.createDiv({ cls: 'qm-trash-bar' });
+    if (this.items.length > 1) {
+      const all = bar.createEl('button', { text: '全部删除', cls: 'qm-mini-btn qm-mini-btn-danger' });
+      all.setAttr('title', '删除上面列出的全部孤儿卡片，可从「最近删除」逐条恢复');
+      all.onclick = () => {
+        new ConfirmModal(
+          this.app,
+          '删除全部孤儿卡片？',
+          async () => {
+            const res = await this.plugin.deleteOrphans(this.items);
+            new Notice('已清理 ' + res.deleted + ' 条' + (res.failed ? '，' + res.failed + ' 条未找到已跳过' : '') + '，可在「最近删除」恢复', 8000);
+            this.onOpen();
+          },
+          '这 ' + this.items.length + ' 段会从速记文件里移除，之后仍可在「最近删除」里逐条恢复。',
+          '全部删除'
+        ).open();
+      };
+    }
     const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
     close.onclick = () => this.close();
   }
@@ -5033,6 +5049,74 @@ class QuickMemoPlugin extends Plugin {
     this.notifyViews({ path: item.filePath, content: written });
     new Notice('已删除 · 可在「最近删除」恢复', 7000);
     return true;
+  }
+
+  /** 批量删除孤儿卡片：按文件分组，一次 process；写盘前逐条按 ID 重新定位 */
+  async deleteOrphans(items) {
+    const list = Array.isArray(items) ? items.slice() : [];
+    const opts = { strict: this.settings.strictCardId !== false };
+    const saved = [];
+    const failed = [];
+    const byFile = new Map();
+    for (const it of list) {
+      const p = String((it && it.filePath) || '');
+      if (!p) { failed.push(it); continue; }
+      if (!byFile.has(p)) byFile.set(p, []);
+      byFile.get(p).push(it);
+    }
+
+    const writes = [];
+    for (const [path, group] of byFile) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      const guard = this.checkManagedFile(file, group[0].date);
+      if (!guard.ok) { failed.push(...group); continue; }
+      try {
+        await this.app.vault.process(file, (data) => {
+          const text = String(data || '');
+          const live = qmFindOrphans(text, path, opts);
+          const ranges = [];
+          const used = new Set();
+          for (const it of group) {
+            const hit = live.filter((o) => o.id === it.id)[0];
+            if (!hit || used.has(hit.lineStart)) { failed.push(it); continue; }
+            used.add(hit.lineStart);
+            ranges.push(hit);
+          }
+          if (!ranges.length) return data;
+
+          const lines = text.replace(/\r\n?/g, '\n').split('\n');
+          ranges.sort((a, b) => b.lineStart - a.lineStart); // 从后往前删，行号不错位
+          const removed = [];
+          for (const hit of ranges) {
+            removed.push({
+              date: hit.date,
+              time: '',
+              body: hit.preview,
+              lines: hit.lines.slice(),
+              filePath: path,
+            });
+            lines.splice(hit.lineStart, hit.lineEnd - hit.lineStart + 1);
+          }
+          let out = lines.join('\n');
+          for (const d of new Set(removed.map((x) => x.date))) {
+            out = qmPruneEmptyDateSections(out, d);
+          }
+          saved.push(...removed);
+          if (out !== data) {
+            this.rememberWrite(path, out);
+            writes.push({ path, content: out });
+          }
+          return out;
+        });
+      } catch (e) {
+        failed.push(...group);
+      }
+    }
+
+    if (saved.length) await this.pushTrashMany(saved);
+    if (writes.length === 1) this.notifyViews({ path: writes[0].path, content: writes[0].content });
+    else if (writes.length > 1) this.notifyViews();
+    return { deleted: saved.length, failed: failed.length };
   }
 
   /* ---------------- 空日期标题自动清理 ---------------- */
