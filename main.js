@@ -1626,6 +1626,13 @@ class OrphanModal extends Modal {
     super(app);
     this.plugin = plugin;
     this.items = [];
+    this._fresh = false;
+  }
+
+  /** 重新扫描：强制重读速记文件，再把整窗重画一次 */
+  async rescan() {
+    this._fresh = true;
+    await this.onOpen();
   }
 
   async onOpen() {
@@ -1639,7 +1646,7 @@ class OrphanModal extends Modal {
     });
 
     const list = contentEl.createDiv({ cls: 'qm-orphan-list' });
-    this.items = await this.plugin.findOrphans();
+    this.items = await this.plugin.findOrphans(this._fresh);
     if (!this.items.length) {
       list.createEl('div', { text: '没有发现孤儿卡片。', cls: 'qm-hint' });
     } else {
@@ -1678,9 +1685,13 @@ class OrphanModal extends Modal {
     }
 
     const bar = contentEl.createDiv({ cls: 'qm-trash-bar' });
-    if (this.items.length > 1) {
-      const all = bar.createEl('button', { text: '全部删除', cls: 'qm-mini-btn qm-mini-btn-danger' });
-      all.setAttr('title', '删除上面列出的全部孤儿卡片，可从「最近删除」逐条恢复');
+    // 「全部删除」常驻左下角；没有可删内容时置灰、不绑点击
+    const allCls = 'qm-mini-btn qm-mini-btn-danger qm-trash-clear' + (this.items.length ? '' : ' is-disabled');
+    const all = bar.createEl('button', { text: '全部删除', cls: allCls });
+    all.setAttr('title', this.items.length
+      ? '删除上面列出的全部孤儿卡片，可从「最近删除」逐条恢复'
+      : '当前没有可删除的孤儿卡片');
+    if (this.items.length) {
       all.onclick = () => {
         new ConfirmModal(
           this.app,
@@ -1695,8 +1706,10 @@ class OrphanModal extends Modal {
         ).open();
       };
     }
-    const close = bar.createEl('button', { text: '关闭', cls: 'qm-mini-btn' });
-    close.onclick = () => this.close();
+    // 右上角 X 已经能关闭，这里改成「重新扫描」：绕过缓存重读文件再扫一遍
+    const rescan = bar.createEl('button', { text: '重新扫描', cls: 'qm-mini-btn' });
+    rescan.setAttr('title', '重新读取速记文件并检查孤儿卡片');
+    rescan.onclick = () => this.rescan();
   }
 
   onClose() {
@@ -4934,13 +4947,14 @@ class QuickMemoPlugin extends Plugin {
   /* ---------------- 孤儿卡片：只读扫描 + 有确认的处置 ---------------- */
 
   /** 扫描当前托管文件夹里所有「有块 ID 但不显示」的段 */
-  async findOrphans() {
+  async findOrphans(fresh) {
     const out = [];
     const opts = { strict: this.settings.strictCardId !== false };
     for (const f of this.listCardFiles()) {
       let content = '';
       try {
-        content = await this.app.vault.cachedRead(f);
+        // 「重新扫描」要读到刚落盘的内容，绕过 Obsidian 的读取缓存
+        content = fresh ? await this.app.vault.read(f) : await this.app.vault.cachedRead(f);
       } catch (e) {
         continue;
       }
